@@ -273,7 +273,7 @@ if __name__ == '__main__':
     infer_semantic_from_classname_and_sam3_inference_state = None
     build_sam3_inference_state = None
     select_sam_feature_views = None
-    if semantic_feat_src is not None:
+    if semantic_feat_src is not None: # semantic_feat_src: 'distill'
         from occany.semantic_inference import (
             build_sam3_inference_state,
             infer_sam2_feats,
@@ -323,7 +323,7 @@ if __name__ == '__main__':
                 "Expected the merged checkpoint at checkpoints/occany.pth."
             )
         #=================================================================#
-        # 三维重建阶段的编码器：Dust3rEncoder 解码器：Must3rDecoder
+        # 3D重建阶段的编码器：Dust3rEncoder 解码器：Must3rDecoder
         encoder = Dust3rEncoder() # Encoder: Dust3r 编码器
         checkpoint = torch.load(weights_path, map_location='cpu', weights_only=False)
         checkpoint_args = checkpoint['args']
@@ -338,7 +338,7 @@ if __name__ == '__main__':
             print("    Projection features:", projection_features)
             raymap_encoder = RaymapEncoderDiT(
                 use_time_cond=False,    
-                use_raymap_only_conditioning=use_raymap_only_conditioning,
+                use_raymap_only_conditioning=use_raymap_only_conditioning, # False
                 projection_features=projection_features,
             )   # raymap_encoder: RaymapEncoderDiT 
             raymap_encoder.load_state_dict(checkpoint['raymap_encoder'], strict=False)
@@ -520,8 +520,8 @@ if __name__ == '__main__':
             sam_feats_raymap = None
             recon_2_gen_mapping = None
             generated_output_c2w = None
-
-            if model_family == "da3":
+            # model_family: 'must3r'
+            if model_family == "da3": 
                 recon_model_to_use = da3_model_recon if da3_model_recon is not None else da3_model_gen
                 force_pose_from_depth_ray_for_da3_gen = args.gen
                 pose_from_depth_ray_for_da3 = args.pose_from_depth_ray or force_pose_from_depth_ray_for_da3_gen
@@ -636,6 +636,8 @@ if __name__ == '__main__':
                         raymap_out[args.key_to_get_pts3d] = raymap_out['pts3d']
                     sam_feats_raymap = gen_output.get('sam_feats')
             else:   # model_family:'must3r' inference_occany_gen: must3r_inference
+                # ==================================================================#
+                # 3D 重建
                 img_out, raymap_out, x_ray, sam_feats, sam_feats_raymap, recon_2_gen_mapping = inference_occany_gen(
                     recon_views,
                     None,
@@ -658,7 +660,7 @@ if __name__ == '__main__':
                     raymap_batch_size=args.batch_gen_view,                          # 2
                     key_to_get_pts3d=args.key_to_get_pts3d,             
                     dtype=torch.float32,
-                    sam_model=sam_model_for_inference,                              # SAM2
+                    sam_model=sam_model_for_inference,                              # 'SAM2'
                 )
 
             sam_feats_img_and_raymap = None
@@ -669,7 +671,7 @@ if __name__ == '__main__':
                     sam_feats_img_and_raymap = [
                         torch.cat([sam_feats[level_idx], sam_feats_raymap[level_idx]], dim=1)
                         for level_idx in range(min(len(sam_feats), len(sam_feats_raymap)))
-                    ]
+                    ]   # 3:(1 35 256 32 32) (1 35 64 64 64) (1 35 32 128 128)
                 elif sam_feats is not None:
                     sam_feats_img_and_raymap = sam_feats
             
@@ -678,7 +680,7 @@ if __name__ == '__main__':
         res = img_out
         
         imgs = [v['img'] for v in recon_views]
-        imgs = torch.stack(imgs, dim=1)
+        imgs = torch.stack(imgs, dim=1)         # (1 5 3 160 512)
         if model_family == "da3":
             imgs = denormalize_da3_imgs_to_minus1_1(imgs)
 
@@ -686,7 +688,7 @@ if __name__ == '__main__':
         recon_semantic_2ds = None
         gen_semantic_2ds = None
         sam2_feats_batch = []
-        if args.semantic is not None:
+        if args.semantic is not None:   #  'distill@SAM2_large'
             feat_src = semantic_feat_src
             n_recon_views = len(recon_views) # 5
             n_gen_views = 0 if raymap_out is None else raymap_out['pts3d'].shape[1] # 30
@@ -702,7 +704,7 @@ if __name__ == '__main__':
                 dtype=torch.uint8,
             )
 
-            if semantic_family == "SAM2":
+            if semantic_family == "SAM2": # 'semantic_family': "SAM2"
                 sam2_model_type = semantic_model_type
                 sam2_imgs_recon = None
                 if feat_src == 'pretrained':
@@ -746,8 +748,8 @@ if __name__ == '__main__':
 
                         for recon_view_i in range(n_recon_views):
                             box_dict = recon_views[recon_view_i]['box_dict'][batch_i]
-                            boxes = box_dict['boxes']
-                            confidences = box_dict['confidences']
+                            boxes = box_dict['boxes']               # (35 4)
+                            confidences = box_dict['confidences']   # (35,)
                             labels = box_dict['labels']
 
                             valid_indices = [idx for idx, label in enumerate(labels) if label in class2idx]
@@ -1074,10 +1076,10 @@ if __name__ == '__main__':
 
             for name, output in outputs.items():
                 has_semantic_output = args.semantic is not None and output.get("semantic_2ds") is not None
-                colors_hwc = output['colors'][j].permute(0, 2, 3, 1).cpu().numpy()
+                colors_hwc = output['colors'][j].permute(0, 2, 3, 1).cpu().numpy()  # (5 160 512 3)
                 save_dict = {
-                    "pts3d": output['pts3d'][j].cpu().numpy(),
-                    "pts3d_local": output['pts3d_local'][j].cpu().numpy(),
+                    "pts3d": output['pts3d'][j].cpu().numpy(),                      # (5 160 512 3)
+                    "pts3d_local": output['pts3d_local'][j].cpu().numpy(),          # (5 160 512 3)
                     "colors": colors_hwc,
                     "conf": output['conf'][j].cpu().numpy(),
                     "focal": output['focal'][j].cpu().numpy(),
@@ -1091,15 +1093,15 @@ if __name__ == '__main__':
 
             grid_size = tuple(occ_size)
             voxel_predictions_dict = {
-                "estimated_input_camera_poses": outputs['render']['estimated_camera_poses'][j].cpu().numpy(),
+                "estimated_input_camera_poses": outputs['render']['estimated_camera_poses'][j].cpu().numpy(),   # (5 4 4)
                 "estimated_input_intrinsics": build_intrinsics_from_focal(
                     outputs['render']['focal'][j],
                     H,
                     W,
                 ).cpu().numpy(),
                 "estimated_input_images": convert_images_to_uint8_hwc(outputs['render']['colors'][j]),
-                "voxel_size": voxel_size,
-                "voxel_origin": voxel_origin.cpu().numpy(),
+                "voxel_size": voxel_size,                       # 0.4
+                "voxel_origin": voxel_origin.cpu().numpy(),     # (3) [-40 -40 -3.6]
             }
 
             recon_output = outputs['render']
@@ -1179,7 +1181,7 @@ if __name__ == '__main__':
                         n_classes,
                         other_class,
                         empty_class,
-                    )
+                    )   # (200 200 24)
 
                 voxel_pred = gen_voxel_pred.clone()
                 non_empty_mask = render_voxel_pred != empty_class

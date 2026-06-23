@@ -297,14 +297,14 @@ def inference_encoder(encoder, imgs, true_shape_view,
 
             
 
-        if max_bs is None:
+        if max_bs is None: # None
             # Encode all at once
-            if mem is not None:
-                x, pos = encoder(imgs_view, tshape_view, mem=mem, 
+            if mem is not None: # None
+                x, pos = encoder(imgs_viewNone, tshape_view, mem=mem, 
                     mem_raymap=mem_raymap, mem_pos=mem_pos, mem_timesteps=mem_timesteps,
                     timesteps=timesteps)
             else:   # encoder: dust3REncoder
-                x, pos = encoder(imgs_view, tshape_view)    # (5 320 1024) (5 320 2)
+                x, pos = encoder(imgs_view, tshape_view)    # (5 320 1024) (5 320 2) 320 = 512/16 * 160 /16
         else:
             raise NotImplementedError("not implement for mem_raymap yet")
             # Slice into chunks to fit memory
@@ -577,7 +577,7 @@ def inference_occany_gen(img_views, gen_views,
     # Reconstruction path (frozen decoder - already in eval mode with requires_grad=False)
     with torch.autocast("cuda", dtype=dtype):
         imgs, true_shape_img, mem_batches, img_timesteps = prepare_imgs_or_raymaps_and_true_shape_mem_batches(img_views, device, is_raymap=False)   # (1 5 3 160 512) (1 5 2)
-        B, nimgs, C, H, W = imgs.shape
+        B, nimgs, C, H, W = imgs.shape  # (1 5 3 160 512) view=5  imgs: normalize to -1~1
         # Encoder forward - no gradients needed for frozen reconstruction
         with torch.no_grad():
             # encoder和decoder，采用dust3r系列Transformer架构
@@ -585,11 +585,11 @@ def inference_occany_gen(img_views, gen_views,
             x_img, pos_img = inference_encoder(
                 encoder=img_encoder,    # Dust3rEncoder: 类似于VGGT, N(24)个attention模块进行自注意力交互
                 imgs=imgs,
-                true_shape_view=true_shape_img.view(B * nimgs, 2),
+                true_shape_view=true_shape_img.view(B * nimgs, 2),  # (5 2) [160 512] 输入尺寸
                 max_bs=None,
                 requires_grad=False,
-            )   # (1 5 320 1024) (1 5 320 2)
-            # 解码器：在must3R基础上进行扩展，增加sam2特征预测头
+            )   # (1 5 320 1024) (1 5 320 2) x, pos = encoder(imgs_view, tshape_view)
+            # 解码器：在must3R基础上进行扩展，增加了sam2特征预测头
             img_out_0, pose_img_out_0, sam_feats_0, mem = inference_img_online(
                 decoder=decoder,            # Must3rDecoder
                 x=x_img,                    # (1 5 320 1024)

@@ -24,6 +24,8 @@ pip install timm pycocotools
 pip install psutil ftfy supervision 
 pip install addict yapf
 
+
+
 python inference.py \
   --batch_gen_view 2 \
   --view_batch_size 2 \
