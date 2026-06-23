@@ -303,8 +303,8 @@ def inference_encoder(encoder, imgs, true_shape_view,
                 x, pos = encoder(imgs_view, tshape_view, mem=mem, 
                     mem_raymap=mem_raymap, mem_pos=mem_pos, mem_timesteps=mem_timesteps,
                     timesteps=timesteps)
-            else:
-                x, pos = encoder(imgs_view, tshape_view)
+            else:   # encoder: dust3REncoder
+                x, pos = encoder(imgs_view, tshape_view)    # (5 320 1024) (5 320 2)
         else:
             raise NotImplementedError("not implement for mem_raymap yet")
             # Slice into chunks to fit memory
@@ -337,7 +337,7 @@ def inference_encoder(encoder, imgs, true_shape_view,
             x = torch.cat(x_chunks, dim=0)
             pos = torch.cat(pos_chunks, dim=0)
 
-        return x.view(B, nimgs, *x.shape[1:]), pos.view(B, nimgs, *pos.shape[1:])
+        return x.view(B, nimgs, *x.shape[1:]), pos.view(B, nimgs, *pos.shape[1:]) # (1 5 320 1024) (1 5 320 2)
 
 
 
@@ -434,26 +434,26 @@ def inference_img_online(decoder, x, pos, true_shape, mem_batches,
                   verbose=False,
                   train_decoder_skip=0,
                   timesteps=None):
-    B, nimgs = x.shape[:2]
+    B, nimgs = x.shape[:2]  # (1 5 320 1024)
     _, _, N, D = x.shape
     
     # use the decoder to update the memory
     # we'll also get first pass pointmaps in pointmaps_0
     # not all images have to update the memory
     mem = None
-    mem_batches = [0] + np.cumsum(mem_batches).tolist()
+    mem_batches = [0] + np.cumsum(mem_batches).tolist() # [0 2 3 4 5]
 
     pointmaps_0 = []
     pose_out_0 = []
     sam_feats_0 = []
     for i in range(train_decoder_skip, len(mem_batches) - 1):
-        xi = x[:, mem_batches[i]:mem_batches[i + 1]].contiguous()
-        posi = pos[:, mem_batches[i]:mem_batches[i + 1]].contiguous()
-        true_shapei = true_shape[:, mem_batches[i]:mem_batches[i + 1]].contiguous()
+        xi = x[:, mem_batches[i]:mem_batches[i + 1]].contiguous()                   # (1 2 320 1024)
+        posi = pos[:, mem_batches[i]:mem_batches[i + 1]].contiguous()               # (1 2 320 2)
+        true_shapei = true_shape[:, mem_batches[i]:mem_batches[i + 1]].contiguous() # (1 2 2)
         
-        dec_out = decoder(xi, posi, true_shapei, mem)
+        dec_out = decoder(xi, posi, true_shapei, mem)   # Must3rDecoder 
         if len(dec_out) == 4:
-            mem, pointmaps_0i, pose_out_0i, sam_feats_i = dec_out
+            mem, pointmaps_0i, pose_out_0i, sam_feats_i = dec_out   # mem; pointmap:rgb + global + local + config(1 2 160 512 10); cam pose:(1 2 7); sam like feat: 3:(1 2 256 32 32) (1 2 64 64 64) (1 2 32 128 128)
         elif len(dec_out) == 3:
             mem, pointmaps_0i, pose_out_0i = dec_out
             sam_feats_i = None
@@ -536,10 +536,10 @@ def prepare_imgs_or_raymaps_and_true_shape_mem_batches(views, device, is_raymap=
         imgs_or_raymaps = torch.stack(imgs_or_raymaps, dim=1).to(device)
     else:
         imgs_or_raymaps = [b['img'] for b in views]
-        imgs_or_raymaps = torch.stack(imgs_or_raymaps, dim=1).to(device)
-    B, nimgs, C, H, W, = imgs_or_raymaps.shape
-    true_shape = [torch.as_tensor(b['true_shape']) for b in views]
-    true_shape = torch.stack(true_shape, dim=1).to(device)
+        imgs_or_raymaps = torch.stack(imgs_or_raymaps, dim=1).to(device)    # kitti:(1 5 3 160 512)
+    B, nimgs, C, H, W, = imgs_or_raymaps.shape                              # (1 5 3 160 512)
+    true_shape = [torch.as_tensor(b['true_shape']) for b in views]      
+    true_shape = torch.stack(true_shape, dim=1).to(device)                  # (1 5 2) img_shape
     mem_batches = [2]
     while sum(mem_batches) < nimgs:
         mem_batches.append(1)
@@ -549,7 +549,7 @@ def prepare_imgs_or_raymaps_and_true_shape_mem_batches(views, device, is_raymap=
     timesteps = torch.stack(timesteps, dim=1).to(device).type_as(imgs_or_raymaps)
     
     
-    return imgs_or_raymaps, true_shape, mem_batches, timesteps #, distill_imgs
+    return imgs_or_raymaps, true_shape, mem_batches, timesteps #, distill_imgs  # (1 5 3 160 512)
 
 
 
@@ -572,27 +572,29 @@ def inference_occany_gen(img_views, gen_views,
                      key_to_get_pts3d='pts3d',
                      dtype=torch.float32,
                      sam_model="SAM2"):
+    #=======================================================================================#
+    # Reconstruction(3.1 3D reconstruction with segmentation forcing)
     # Reconstruction path (frozen decoder - already in eval mode with requires_grad=False)
     with torch.autocast("cuda", dtype=dtype):
-        imgs, true_shape_img, mem_batches, img_timesteps = prepare_imgs_or_raymaps_and_true_shape_mem_batches(img_views, device, is_raymap=False)
-
+        imgs, true_shape_img, mem_batches, img_timesteps = prepare_imgs_or_raymaps_and_true_shape_mem_batches(img_views, device, is_raymap=False)   # (1 5 3 160 512) (1 5 2)
         B, nimgs, C, H, W = imgs.shape
-        
         # Encoder forward - no gradients needed for frozen reconstruction
         with torch.no_grad():
+            # encoder和decoder，采用dust3r系列Transformer架构
+            # 编码器
             x_img, pos_img = inference_encoder(
-                encoder=img_encoder,
+                encoder=img_encoder,    # Dust3rEncoder: 类似于VGGT, N(24)个attention模块进行自注意力交互
                 imgs=imgs,
                 true_shape_view=true_shape_img.view(B * nimgs, 2),
                 max_bs=None,
                 requires_grad=False,
-            )
-            
+            )   # (1 5 320 1024) (1 5 320 2)
+            # 解码器：在must3R基础上进行扩展，增加sam2特征预测头
             img_out_0, pose_img_out_0, sam_feats_0, mem = inference_img_online(
-                decoder=decoder,
-                x=x_img,
-                pos=pos_img,
-                true_shape=true_shape_img,
+                decoder=decoder,            # Must3rDecoder
+                x=x_img,                    # (1 5 320 1024)
+                pos=pos_img,                # (1 5 320 2)
+                true_shape=true_shape_img,  # (1 5 2)
                 mem_batches=mem_batches,
                 verbose=False,
             )

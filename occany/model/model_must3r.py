@@ -55,7 +55,7 @@ class Dust3rEncoder(BaseTransformer):
                  pos_embed='RoPE100'):
         super(Dust3rEncoder, self).__init__()
         self.embed_dim = embed_dim
-        self.depth = depth
+        self.depth = depth # 24
 
         self.set_patch_embed(patch_embed, img_size, patch_size, embed_dim)
 
@@ -78,12 +78,12 @@ class Dust3rEncoder(BaseTransformer):
     @torch.autocast("cuda", dtype=torch.float32)
     def forward(self, img, true_shape):
         # img: [80, 3, 80, 224])
-        x, pos = self.patch_embed(img, true_shape=true_shape)
+        x, pos = self.patch_embed(img, true_shape=true_shape)   # (5 320 1024) (5 320 2)
         
         # x: [80, 70, 1024]
-        for blk in self.blocks_enc:
-            x = blk(x, pos)
-        x = self.norm_enc(x)
+        for blk in self.blocks_enc:                             # len:24 Transformer Attention模块
+            x = blk(x, pos)                                     # (5 320 1024)
+        x = self.norm_enc(x)                                    # (5 320 1024)
         return x, pos
 
 
@@ -505,52 +505,52 @@ class Must3rDecoder (nn.Module):
         self._head_wrapper = transpose_to_landscape(self.head_dec, activate=landscape_only)
 
     def _compute_prediction_head(self, true_shape, B, nimgs, feats):
-        feats[-1] = self.norm_dec(feats[-1])
+        feats[-1] = self.norm_dec(feats[-1])    # (2 321 768)
         with torch.autocast("cuda", dtype=torch.float32):
-            last_feat = feats[-1]
-            pose_feature, dense_feature = last_feat[:, 0, :].float(), last_feat[:, 1:, :].float()
+            last_feat = feats[-1]   # (2 321 768)
+            pose_feature, dense_feature = last_feat[:, 0, :].float(), last_feat[:, 1:, :].float()   # (2 768) (2 320 768)
             
 
             if self.use_multitask_token:
                 decout_pts3d = [dense_feature + self.pts3d_task_token]
             else:
                 decout_pts3d = [dense_feature]
-            x = self._head_wrapper(decout_pts3d, true_shape.view(B * nimgs, *true_shape.shape[2:]))
-            x = x.view(B, nimgs, *x.shape[1:])
+            x = self._head_wrapper(decout_pts3d, true_shape.view(B * nimgs, *true_shape.shape[2:])) # (2 160 512 7)
+            x = x.view(B, nimgs, *x.shape[1:])                                                      # (1 2 160 512 7)
                 
             
             if self.pred_rgb:
                 if self.use_multitask_token:
-                    decout_rgb = [dense_feature + self.rgb_task_token]
+                    decout_rgb = [dense_feature + self.rgb_task_token]                                          # 1:(2 320 768)
                 else:
-                    decout_rgb = [dense_feature]
-                x_rgb = self._head_wrapper_rgb(decout_rgb, true_shape.view(B * nimgs, *true_shape.shape[2:]))
-                x_rgb = x_rgb.view(B, nimgs, *x_rgb.shape[1:])
-                x = torch.cat([x, x_rgb], dim=-1)
+                    decout_rgb = [dense_feature]                                                                
+                x_rgb = self._head_wrapper_rgb(decout_rgb, true_shape.view(B * nimgs, *true_shape.shape[2:]))   # (2 160 512 3)
+                x_rgb = x_rgb.view(B, nimgs, *x_rgb.shape[1:])                                                  # (1 2 160 512 3)
+                x = torch.cat([x, x_rgb], dim=-1)                                                               # (1 2 160 512 10)
 
             if self.pred_sam_features:
                 if self.use_multitask_token:
-                    decout_sam = [dense_feature + self.sam_task_token]
+                    decout_sam = [dense_feature + self.sam_task_token]                                          # 1:(2 320 768)
                 else:
-                    decout_sam = [dense_feature]
-                sam_head_out = self._head_wrapper_sam(decout_sam, true_shape.view(B * nimgs, *true_shape.shape[2:]))
-                if self.sam_model == "SAM3":
+                    decout_sam = [dense_feature]                                                                
+                sam_head_out = self._head_wrapper_sam(decout_sam, true_shape.view(B * nimgs, *true_shape.shape[2:]))    # 3:(2 256 32 32) (2 64 64 64) (2 32 128 128)
+                if self.sam_model == "SAM3": 
                     # SAM3Head returns (feat_s0, feat_s1, feat_s2, pre_neck_feat)
                     feat_s0, feat_s1, feat_s2, pre_neck_feat = sam_head_out
                     # Include pre_neck_feat as 4th element for distillation
                     sam_feats = [v.view(B, nimgs, *v.shape[1:]) for v in (feat_s0, feat_s1, feat_s2, pre_neck_feat)]
-                else:
+                else:   # SAM2
                     # SAMHead returns (image_embed, feat_s1, feat_s0)
-                    image_embed, feat_s1, feat_s0 = sam_head_out
-                    sam_feats = [v.view(B, nimgs, *v.shape[1:]) for v in (image_embed, feat_s1, feat_s0)]
+                    image_embed, feat_s1, feat_s0 = sam_head_out    # (2 256 32 32) (2 64 64 64) (2 32 128 128)
+                    sam_feats = [v.view(B, nimgs, *v.shape[1:]) for v in (image_embed, feat_s1, feat_s0)]   # 3:(1 2 256 32 32) (1 2 64 64 64) (1 2 32 128 128)
             else:
                 sam_feats = None
             if self.pred_pose:
-                pose_out = self.head_pose(pose_feature)
-                pose_out = pose_out.view(B, nimgs, -1)
+                pose_out = self.head_pose(pose_feature) # (2 768) -> (2 7)
+                pose_out = pose_out.view(B, nimgs, -1)  # (1 2 7)
             else:
                 pose_out = None
-        return x, pose_out, sam_feats
+        return x, pose_out, sam_feats   # (1 2 160 512 10)  (1 2 7) 3:(1 2 256 32 32) (1 2 64 64 64) (1 2 32 128 128)
     
     def _get_empty_memory(self, device, current_dtype, B, mem_D):
         current_mem = [torch.zeros((B, 0, mem_D), dtype=current_dtype, device=device) for _ in range(self.depth)]
@@ -611,50 +611,50 @@ class Must3rDecoder (nn.Module):
 
 
         current_dtype = get_current_dtype(x.dtype)
-        B, nimgs, N, Denc = x.shape
+        B, nimgs, N, Denc = x.shape                                     # (1 2 320 1024)
         feats = [x.view(B * nimgs, N, Denc)]
-        x = self.feat_embed_enc_to_dec(feats[0]).view(B, nimgs, N, -1)
+        x = self.feat_embed_enc_to_dec(feats[0]).view(B, nimgs, N, -1)  # (1 2 320 768)
 
-
+        # 位姿token: x[:,:,:1]
         if self.pred_pose:
             # Add pose token and positional encoding
-            pose_pos = torch.full((B, nimgs, 1, pos.shape[-1]), 0, device=pos.device, dtype=pos.dtype)
-            pos = torch.cat([pose_pos, pos + 1], dim=2) # shift positions by 1 to account for the pose token
-            x = torch.cat([self.pose_token.expand(B, nimgs, -1, -1), x], dim=2)
+            pose_pos = torch.full((B, nimgs, 1, pos.shape[-1]), 0, device=pos.device, dtype=pos.dtype)          # (1 2 1 2)
+            pos = torch.cat([pose_pos, pos + 1], dim=2) # shift positions by 1 to account for the pose token    # (1 2 321 2)
+            x = torch.cat([self.pose_token.expand(B, nimgs, -1, -1), x], dim=2)                                 # (1 2 321 768)
         
-        B, nimgs, N, D = x.shape
-        mem_D = 2 * D if self.memory_mode == "kv" else D
+        B, nimgs, N, D = x.shape    # (1 2 321 768)
+        mem_D = 2 * D if self.memory_mode == "kv" else D    # 1536
         assert not render or current_mem is not None
 
         if current_mem is None:
             assert not is_raymap, "only predict raymap in render mode with memory"
             # initialization
-            x[:, 1:] = x[:, 1:] + self.image2_embed.to(current_dtype)
+            x[:, 1:] = x[:, 1:] + self.image2_embed.to(current_dtype)   # (1 1 321 768)+(1 1 768) (1 2 321 768)
             current_mem, current_mem_labels, mem_nimgs, mem_protected_imgs, mem_protected_tokens = \
                 self._get_empty_memory(x.device, current_dtype, B, mem_D)
         else:
             
             current_mem, current_mem_labels, mem_nimgs, mem_protected_imgs, mem_protected_tokens = current_mem
             x = x + self.image2_embed.to(current_dtype)  # not the reference image / memory
-        x = x.view(B * nimgs, N, D)
-        pos = pos.view(B * nimgs, N, 2)
+        x = x.view(B * nimgs, N, D)         # (2 321 768)
+        pos = pos.view(B * nimgs, N, 2)     # (2 321 768)
 
         mem = []
         Nm = current_mem[0].shape[1]
         if not render and (Nm > 0 or nimgs > 1):
             # when updating the memory, do not let an image do CA with its own tokens
             # ignore this rule when initializing from only one image
-            mem_mask = self.make_mem_mask(nimgs, N, Nm, x.device)
+            mem_mask = self.make_mem_mask(nimgs, N, Nm, x.device)   # (2 642)
         else:
             mem_mask = None
 
         new_mem = []
-        for i, (blk, current_mem_blk) in enumerate(zip(self.blocks_dec, current_mem)):
+        for i, (blk, current_mem_blk) in enumerate(zip(self.blocks_dec, current_mem)):  # len:12
             if not render:
                 # update the memory for this layer
-                xmem = x.view(B, nimgs * N, D)
+                xmem = x.view(B, nimgs * N, D)  # (1 642 768)
                 new_mem.append(xmem)
-                mem_i = torch.concatenate([current_mem_blk, blk.prepare_y(xmem)], dim=1)
+                mem_i = torch.concatenate([current_mem_blk, blk.prepare_y(xmem)], dim=1) # (1 642 1536) # concat([k,v])
             else:
                 mem_i = current_mem_blk
 
@@ -662,15 +662,15 @@ class Must3rDecoder (nn.Module):
             # we need B*nimgs, Nmi, D for CA
             if mem_mask is not None:
                 mem_i = mem_i.unsqueeze(1).expand(-1, nimgs, -1, -1)[:, mem_mask].reshape(
-                    B * nimgs, Nm + ((nimgs - 1)) * N, mem_D)
+                    B * nimgs, Nm + ((nimgs - 1)) * N, mem_D)                           # (2 321 1536)
             else:
                 Nmi = mem_i.shape[1]
                 
                 mem_i = mem_i.unsqueeze(1).expand(-1, nimgs, -1, -1).reshape(B * nimgs, Nmi, mem_D)
 
             
-            x_pose_token = x[:, :1]
-            x = blk(x, mem_i, pos, None, inject_pose_token=self.inject_pose_token[i](x_pose_token))
+            x_pose_token = x[:, :1] # (2 1 768) pos_token
+            x = blk(x, mem_i, pos, None, inject_pose_token=self.inject_pose_token[i](x_pose_token)) # (2 321 768) # blk: cross attn module# inject_pose_token() blk()
             feats.append(x)
       
         if not render:
@@ -679,13 +679,13 @@ class Must3rDecoder (nn.Module):
 
             mem = []
             for i in range(len(new_mem)):
-                new_mem_i = self.blocks_dec[i].prepare_y(new_mem[i])
+                new_mem_i = self.blocks_dec[i].prepare_y(new_mem[i])                # (1 642 768) -> [k v] (1 642 1536)
                 mem.append(torch.concatenate([current_mem[i], new_mem_i], dim=1))
 
           
             new_labels = torch.arange(nimgs, dtype=current_mem_labels.dtype, device=current_mem_labels.device).view(
-                1, nimgs, 1).repeat(B, 1, N).view(B, N * nimgs) + mem_nimgs
-            mem_labels = torch.concatenate([current_mem_labels, new_labels], dim=1)
+                1, nimgs, 1).repeat(B, 1, N).view(B, N * nimgs) + mem_nimgs         # (1 642)
+            mem_labels = torch.concatenate([current_mem_labels, new_labels], dim=1) # (1 642)
 
             mem_nimgs = mem_nimgs + nimgs
             
@@ -700,8 +700,8 @@ class Must3rDecoder (nn.Module):
             out = (current_mem, current_mem_labels, mem_nimgs, mem_protected_imgs, mem_protected_tokens)
 
         # apply prediction head
-        x, pose_out, sam_feats = self._compute_prediction_head(true_shape, B, nimgs, feats)
-        return out, x, pose_out, sam_feats
+        x, pose_out, sam_feats = self._compute_prediction_head(true_shape, B, nimgs, feats) # (1 2 160 512 10)  (1 2 7) 3:(1 2 256 32 32) (1 2 64 64 64) (1 2 32 128 128)
+        return out, x, pose_out, sam_feats # (1 2 160 512 10)  (1 2 7) 3:(1 2 256 32 32) (1 2 64 64 64) (1 2 32 128 128)
 
 class CausalMust3rDecoder(Must3rDecoder):
     """

@@ -4,6 +4,8 @@
 
 import argparse
 import os
+os.environ["TMPDIR"] = "/vepfs-mlp2/c20250502/haoce/wangyushen/tmp" #
+os.makedirs(os.environ["TMPDIR"], exist_ok=True)
 import sys
 import types
 from pathlib import Path
@@ -71,7 +73,7 @@ BILINEAR_RESAMPLE = Image.Resampling.BILINEAR if hasattr(Image, "Resampling") el
 
 def get_output_resolution_from_image(image_path: str, model_family: str) -> Tuple[int, int]:
     with Image.open(image_path) as image:
-        return get_output_resolution(image.size, model_family=model_family)
+        return get_output_resolution(image.size, model_family=model_family) # image.size:[1226 370] model_family: 'must3r'
 
 
 COLORS = np.array([
@@ -138,19 +140,9 @@ OCC3D_CATEGORIES = (
     ['tree', 'bush'],
     ['sky', 'empty'],
 )
-        
+
 # PROMPT attribute for SAM-based semantic segmentation
 PROMPT = list(OCC3D_CATEGORIES)
-
-
-
-
-
-
-
-
-
-
 
 
 def get_args_parser():
@@ -247,15 +239,6 @@ def get_args_parser():
 
     return parser
 
-
-
-
-
-
-
-
-
-
 if __name__ == '__main__':
     parser = get_args_parser()
     args = parser.parse_args()
@@ -272,8 +255,8 @@ if __name__ == '__main__':
             is_geometry_only=False,
         )
 
-    semantic_feat_src, semantic_model_type, semantic_family = parse_semantic_mode(args.semantic)
-    model_family = "da3" if args.model == "occany_da3" else "must3r"
+    semantic_feat_src, semantic_model_type, semantic_family = parse_semantic_mode(args.semantic)    # 'distill' 'SAM2_large' 'SAM2'
+    model_family = "da3" if args.model == "occany_da3" else "must3r"                                # 'must3r
 
     if semantic_family is not None:
         if model_family == "must3r":
@@ -317,7 +300,7 @@ if __name__ == '__main__':
     output_resolution = get_output_resolution_from_image(
         sample_image_paths[0],
         model_family=model_family,
-    )
+    )   # must3r: 376x1226 -> 160x512(长边512,短边不失真缩放，且保持为16倍数)
 
 
     raymap_encoder = None
@@ -327,6 +310,8 @@ if __name__ == '__main__':
     da3_model_gen = None
     da3_model_recon = None
 
+    #====================================================================#
+    # 基于Must3r构建(论文中主要介绍的工作)
     if args.model == "occany_must3r":
         from occany.model.model_must3r import Must3r, Dust3rEncoder, RaymapEncoderDiT, Must3rDecoder  # noqa: F401
         from occany.model.must3r_blocks.head import ActivationType  # noqa: F401
@@ -337,13 +322,17 @@ if __name__ == '__main__':
                 f"OccAny Must3R checkpoint not found: {weights_path}. "
                 "Expected the merged checkpoint at checkpoints/occany.pth."
             )
-        encoder = Dust3rEncoder()
+        #=================================================================#
+        # 三维重建阶段的编码器：Dust3rEncoder 解码器：Must3rDecoder
+        encoder = Dust3rEncoder() # Encoder: Dust3r 编码器
         checkpoint = torch.load(weights_path, map_location='cpu', weights_only=False)
         checkpoint_args = checkpoint['args']
-        decoder = eval(checkpoint_args.decoder)
-        
-        use_raymap_only_conditioning = getattr(checkpoint_args, 'use_raymap_only_conditioning', False)
-        if args.gen:
+        decoder = eval(checkpoint_args.decoder) # eval(): 把字符串作为代码执行 Decoder解码器：Must3rDecoder
+        # Must3rDecoder(img_size=(512, 512), enc_embed_dim=1024, embed_dim=768, pointmaps_activation=ActivationType.LINEAR, pred_sam_features=True,feedback_type='single_mlp', memory_mode='kv', ray_map_encoder_depth=6, use_multitask_token=True)
+        #=================================================================#
+        # 新视图合成阶段的编码器； 
+        use_raymap_only_conditioning = getattr(checkpoint_args, 'use_raymap_only_conditioning', False) # False
+        if args.gen:    # True
             print("use_raymap_only_conditioning:", use_raymap_only_conditioning)
             projection_features = getattr(checkpoint_args, 'projection_features', 'pts3d_local,pts3d,rgb,conf,sam')
             print("    Projection features:", projection_features)
@@ -351,20 +340,21 @@ if __name__ == '__main__':
                 use_time_cond=False,    
                 use_raymap_only_conditioning=use_raymap_only_conditioning,
                 projection_features=projection_features,
-            )
+            )   # raymap_encoder: RaymapEncoderDiT 
             raymap_encoder.load_state_dict(checkpoint['raymap_encoder'], strict=False)
         print("Loaded model from", weights_path)
         encoder.load_state_dict(checkpoint['encoder'], strict=False)
         decoder.load_state_dict(checkpoint['decoder'], strict=False)
-       
+        
+        # 新视图合成阶段的解码器：Must3rDecoder(与三维重建阶段的解码器一致)
         # Load gen_decoder if it exists in checkpoint (double decoder setup)
         if 'gen_decoder' in checkpoint:
             print("Loading gen_decoder from checkpoint")
-            gen_decoder = eval(checkpoint['args'].decoder)
+            gen_decoder = eval(checkpoint['args'].decoder) # 解码器：Must3rDecoder
             gen_decoder.load_state_dict(checkpoint['gen_decoder'], strict=False)
             gen_decoder.pointmaps_activation = checkpoint['args'].pointmaps_activation
             gen_decoder.to(args.device)
-            gen_decoder.eval()
+            gen_decoder.eval()  # gen_decoder: Must3rDecoder
         
         if args.gen and 'raymap_encoder' in checkpoint:
             raymap_encoder.load_state_dict(checkpoint['raymap_encoder'], strict=False)
@@ -379,6 +369,7 @@ if __name__ == '__main__':
             raymap_encoder.eval()
         encoder.eval()
         decoder.eval()
+    
     elif args.model == "occany_da3":
         from occany.da3_inference import inference_occany_da3, inference_occany_da3_gen
 
@@ -411,22 +402,22 @@ if __name__ == '__main__':
     if args.model == "occany_must3r":
         modules = [m for m in [encoder, decoder, raymap_encoder] if m is not None]
         if gen_decoder is not None:
-            modules.append(gen_decoder)
+            modules.append(gen_decoder) # modules：Dust3rEncoder, Must3rDecoder, RaymapEncoderDiT, Must3rDecoder
         total_params = sum(p.numel() for m in modules for p in m.parameters())
         trainable_params = sum(
             p.numel() for m in modules for p in m.parameters() if p.requires_grad
-        )
+        )   # 统计所有可训练参数的总参数量
         extra = "+gen_decoder" if gen_decoder is not None else ""
         print(
-            f"Model 'occany_must3r' (encoder+decoder+raymap_encoder{extra}) - "
-            f"total parameters: {total_params:,}, trainable parameters: {trainable_params:,}"
+            f"Model 'occany_must3r' (encoder+decoder+raymap_encoder{extra}) - "                 # occany_must3r: encoder+decoder+raymap_encoder+gen_decoder 
+            f"total parameters: {total_params:,}, trainable parameters: {trainable_params:,}"   # 651,129,550; 651,129,550
         )
     elif args.model == "occany_da3":
         total_params = sum(p.numel() for p in da3_model_gen.parameters())
         trainable_params = sum(p.numel() for p in da3_model_gen.parameters() if p.requires_grad)
         primary_model_label = "occany_plus_gen" if args.gen else "occany_plus_recon"
         print(
-            f"Model '{primary_model_label}' - total parameters: {total_params:,}, "
+            f"Model '{primary_model_label}' - total parameters: {total_params:,}, " # 
             f"trainable parameters: {trainable_params:,}"
         )
         if args.gen and da3_model_recon is not None and da3_model_recon is not da3_model_gen:
@@ -439,18 +430,23 @@ if __name__ == '__main__':
                 f"trainable parameters: {recon_trainable_params:,}"
             )
 
-  
-  
-
-    recon_conf_thres = args.recon_conf_thres
-    gen_conf_thres = args.gen_conf_thres
+    recon_conf_thres = args.recon_conf_thres        # 2.0
+    gen_conf_thres = args.gen_conf_thres            # 2.0
     print(f"recon_conf_thres: {recon_conf_thres}")
     print(f"gen_conf_thres:   {gen_conf_thres}")
 
+    #=========================================================#
+    # kitti
     voxel_size = 0.4
     occ_size = [200, 200, 24]
     voxel_origin = torch.tensor([-40.0, -40.0, -3.6], device=args.device, dtype=torch.float32)
-    
+
+    #=========================================================#
+    # nuscenes
+    # voxel_size = 0.4
+    # occ_size = [200, 200, 16]
+    # voxel_origin = np.array([-40.0, -40.0, -1.0], dtype=np.float32)
+
     print("voxel_size:", voxel_size)
     print("occ_size:", occ_size)
     print("voxel_origin:", voxel_origin)
@@ -472,19 +468,19 @@ if __name__ == '__main__':
         device=args.device,
     )
 
-    for frame_dir in tqdm(frame_dirs, desc=f"Processing RGB demo frames"):
+    for frame_dir in tqdm(frame_dirs, desc=f"Processing RGB demo frames"):  # frame_dirs: kitti, nuscenes
         demo_image_paths, demo_frame_id = extract_demo_rgb_images(str(frame_dir))
         frame_output_resolution = get_output_resolution_from_image(
             demo_image_paths[0],
             model_family=model_family,
-        )
+        )   # [512 160] height=160 weight=512
         recon_views = build_demo_reconstruction_views(
             image_paths=demo_image_paths,
-            output_resolution=frame_output_resolution,
-            model_family=model_family,
-            semantic_family=semantic_family,
-            frame_interval=args.frame_interval,
-            sam3_resolution=args.sam3_resolution,
+            output_resolution=frame_output_resolution,  # 160x512
+            model_family=model_family,                  # must3r
+            semantic_family=semantic_family,            # SAM2
+            frame_interval=args.frame_interval,         # 5
+            sam3_resolution=args.sam3_resolution,       # 1008
             device=args.device,
         )
         print(f"Loaded RGB demo frame '{demo_frame_id}' with {len(recon_views)} views from {frame_dir}")
@@ -492,9 +488,11 @@ if __name__ == '__main__':
             "frame_id": [demo_frame_id],
         }
         B = recon_views[0]["img"].shape[0]
-        _, C, H, W = recon_views[0]["img"].shape
+        _, C, H, W = recon_views[0]["img"].shape    # (1 3 160 512)
 
-        if semantic_family == "SAM2" and args.compute_segmentation_masks:
+        #========================================================#
+        # GroundingDino生成目标框，用于SAM2分割
+        if semantic_family == "SAM2" and args.compute_segmentation_masks:   # True
             box_summary = populate_demo_sam2_box_dicts(
                 recon_views=recon_views,
                 class_names=CLASS_NAMES,
@@ -637,30 +635,30 @@ if __name__ == '__main__':
                     if args.key_to_get_pts3d not in raymap_out:
                         raymap_out[args.key_to_get_pts3d] = raymap_out['pts3d']
                     sam_feats_raymap = gen_output.get('sam_feats')
-            else:
+            else:   # model_family:'must3r' inference_occany_gen: must3r_inference
                 img_out, raymap_out, x_ray, sam_feats, sam_feats_raymap, recon_2_gen_mapping = inference_occany_gen(
                     recon_views,
                     None,
-                    raymap_encoder,
-                    encoder,
-                    decoder,
-                    gen_decoder,
+                    raymap_encoder,     # RaymapEncoderDiT
+                    encoder,            # Dust3rEncoder
+                    decoder,            # Must3rDecoder
+                    gen_decoder,        # Must3rDecoder
                     decoder.pointmaps_activation,
                     args.device,
-                    gen_rotate_novel_poses_angle=args.gen_rotate_novel_poses_angle,
-                    gen_novel_poses=args.gen,
-                    pred_raymap=args.gen,
-                    views_per_interval=args.views_per_interval,
-                    gen_forward_novel_poses_dist=args.gen_forward_novel_poses_dist,
-                    num_seed_rotations=args.num_seed_rotations,
+                    gen_rotate_novel_poses_angle=args.gen_rotate_novel_poses_angle, # 30
+                    gen_novel_poses=args.gen,                                       # True
+                    pred_raymap=args.gen,                                           # True
+                    views_per_interval=args.views_per_interval,                     # 2
+                    gen_forward_novel_poses_dist=args.gen_forward_novel_poses_dist, # 5
+                    num_seed_rotations=args.num_seed_rotations,                     # 0
                     seed_rotation_angle=args.seed_rotation_angle,
-                    seed_translation_distance=args.seed_translation_distance,
+                    seed_translation_distance=args.seed_translation_distance,       # 2
                     use_local_points_with_pose_as_pts3d=False,
-                    use_raymap_only_conditioning=use_raymap_only_conditioning,
-                    raymap_batch_size=args.batch_gen_view,
-                    key_to_get_pts3d=args.key_to_get_pts3d,
+                    use_raymap_only_conditioning=use_raymap_only_conditioning,      # False
+                    raymap_batch_size=args.batch_gen_view,                          # 2
+                    key_to_get_pts3d=args.key_to_get_pts3d,             
                     dtype=torch.float32,
-                    sam_model=sam_model_for_inference,
+                    sam_model=sam_model_for_inference,                              # SAM2
                 )
 
             sam_feats_img_and_raymap = None
@@ -690,8 +688,8 @@ if __name__ == '__main__':
         sam2_feats_batch = []
         if args.semantic is not None:
             feat_src = semantic_feat_src
-            n_recon_views = len(recon_views)
-            n_gen_views = 0 if raymap_out is None else raymap_out['pts3d'].shape[1]
+            n_recon_views = len(recon_views) # 5
+            n_gen_views = 0 if raymap_out is None else raymap_out['pts3d'].shape[1] # 30
             n_recon_and_gen_views = n_recon_views + n_gen_views
 
             semantic_fill_value = empty_class

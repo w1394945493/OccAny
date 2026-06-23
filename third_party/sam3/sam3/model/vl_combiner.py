@@ -8,7 +8,12 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 
-from torch.nn.attention import sdpa_kernel, SDPBackend
+# from torch.nn.attention import sdpa_kernel, SDPBackend
+try:
+    from torch.nn.attention import sdpa_kernel,SDPBackend
+    HAS_SDP_BACKEND = True
+except ImportError:
+    HAS_SDP_BACKEND = False
 
 from .act_ckpt_utils import activation_ckpt_wrapper
 from .necks import Sam3DualViTDetNeck
@@ -144,19 +149,24 @@ class SAM3VLBackbone(nn.Module):
             # if there are additional_text, we piggy-back them into this forward.
             # They'll be used later for output alignment
             text_to_encode += additional_text
+        
+        if HAS_SDP_BACKEND:
+            sdpa_context = sdpa_kernel(
+                [
+                    SDPBackend.MATH,
+                    SDPBackend.EFFICIENT_ATTENTION,
+                    SDPBackend.FLASH_ATTENTION,
+                ]
+            )
 
-        sdpa_context = sdpa_kernel(
-            [
-                SDPBackend.MATH,
-                SDPBackend.EFFICIENT_ATTENTION,
-                SDPBackend.FLASH_ATTENTION,
-            ]
-        )
-
-        with sdpa_context:
+            with sdpa_context:
+                text_attention_mask, text_memory, text_embeds = self.language_backbone(
+                    text_to_encode, input_boxes, device=device
+                )
+        else:
             text_attention_mask, text_memory, text_embeds = self.language_backbone(
                 text_to_encode, input_boxes, device=device
-            )
+            )            
 
         if additional_text is not None:
             output["additional_text_features"] = text_memory[:, -len(additional_text) :]

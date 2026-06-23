@@ -66,29 +66,26 @@ def predict(
         device: str = "cuda",
         remove_combined: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
-    caption = preprocess_caption(caption=caption)
+    caption = preprocess_caption(caption=caption) # 统一大小写，避免模型把大小写当成不同语义；去掉首尾空格；检查有无句号
     
     
-    model = model.to(device)
-    image = image.to(device)
+    model = model.to(device)                                                                                # GroundingDino
+    image = image.to(device)                                                                                # (3 417 1334)
 
     with torch.no_grad():
-        outputs = model(image[None], captions=[caption])
+        outputs = model(image[None], captions=[caption])                                                    # (1 3 417 1334) -> pred_logits:(1 900 256) pred_boxes:(1 900 4)
 
-    prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]  # prediction_logits.shape = (nq, 256)
-    prediction_boxes = outputs["pred_boxes"].cpu()[0]  # prediction_boxes.shape = (nq, 4)
+    prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]  # prediction_logits.shape = (nq, 256)    # (900 256)
+    prediction_boxes = outputs["pred_boxes"].cpu()[0]  # prediction_boxes.shape = (nq, 4)                   # (900 4)
 
     mask = prediction_logits.max(dim=1)[0] > box_threshold
-    logits = prediction_logits[mask]  # logits.shape = (n, 256)
-    boxes = prediction_boxes[mask]  # boxes.shape = (n, 4)
-
-    tokenizer = model.tokenizer
+    logits = prediction_logits[mask]  # logits.shape = (n, 256)                                             # (35 256)
+    boxes = prediction_boxes[mask]  # boxes.shape = (n, 4)                                                  # (35 4)
+    tokenizer = model.tokenizer # Bert tokenizer                                  
     tokenized = tokenizer(caption)
-    # caption = "motorcyclist"
-    # tokenized = tokenizer("motorcyclist")
-    
+
     if remove_combined:
-        sep_idx = [i for i in range(len(tokenized['input_ids'])) if tokenized['input_ids'][i] in [101, 102, 1012]]
+        sep_idx = [i for i in range(len(tokenized['input_ids'])) if tokenized['input_ids'][i] in [101, 102, 1012]] # 找BERT tokenizer里的句子分隔符位置
         
         phrases = []
         for logit in logits:

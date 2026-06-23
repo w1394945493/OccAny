@@ -9,7 +9,7 @@ except Exception:
     has_xformers = False
 
 try:
-    from torch.nn.functional import scaled_dot_product_attention  # noqa
+    from torch.nn.functional import scaled_dot_product_attention  # noqa SDPA 高性能Attention算子
     has_scaled_dot_product_attention = True
 except Exception:
     has_scaled_dot_product_attention = False

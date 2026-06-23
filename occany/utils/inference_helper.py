@@ -25,7 +25,6 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 
 
-
 def count_module_parameters(module: Optional[torch.nn.Module]) -> Tuple[int, int]:
     """Count total and trainable parameters for one module."""
     if module is None:
@@ -122,7 +121,7 @@ def get_pretrained_semantic_encoder_for_count(
         )
 
     return None, semantic_model_type
-    
+
 def parse_semantic_mode(semantic: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Parse semantic mode into feature source and SAM family."""
     if semantic is None:
@@ -158,8 +157,6 @@ def denormalize_da3_imgs_to_minus1_1(imgs: torch.Tensor) -> torch.Tensor:
     imgs = (imgs * std) + mean
     imgs = imgs.clamp(0.0, 1.0).mul(2.0).sub(1.0)
     return imgs
-
-
 
 
 def get_pts3d_from_voxel(voxel_grid):
@@ -219,8 +216,6 @@ def build_intrinsics_from_focal(
     return intrinsics
 
 
-
-
 def derive_demo_frame_id(image_paths: List[str], scene_dir: str) -> str:
     prefixes = {
         Path(image_path).stem.rsplit("_", 1)[0]
@@ -260,7 +255,6 @@ def normalize_demo_rgb_image(image: Image.Image, model_family: str) -> torch.Ten
     return ImgNorm(image)
 
 
-
 def build_demo_reconstruction_views(
     image_paths: List[str],
     output_resolution: Tuple[int, int],
@@ -275,7 +269,7 @@ def build_demo_reconstruction_views(
 
     semantic_transform = None
     if semantic_family == "SAM2":
-        semantic_transform = get_SAM2_transforms(resolution=min(1024, max(output_resolution)))
+        semantic_transform = get_SAM2_transforms(resolution=min(1024, max(output_resolution))) # 输入分辨率：512x512
     elif semantic_family == "SAM3":
         semantic_transform = get_SAM3_transforms(resolution=sam3_resolution)
 
@@ -285,14 +279,14 @@ def build_demo_reconstruction_views(
     true_shape = np.array([[output_height, output_width]], dtype=np.int32)
 
     for view_idx, image_path in enumerate(image_paths):
-        image = Image.open(image_path).convert("RGB")
+        image = Image.open(image_path).convert("RGB")   # (370 1226)
         resized_image = crop_resize_if_necessary(
             image,
-            resolution=output_resolution,
+            resolution=output_resolution,               # 160x512
             rng=np.random.default_rng(0),
             info=image_path,
-        )
-        img_tensor = normalize_demo_rgb_image(resized_image, model_family=model_family).unsqueeze(0).to(device)
+        )                                               # (160 512)
+        img_tensor = normalize_demo_rgb_image(resized_image, model_family=model_family).unsqueeze(0).to(device) # (1 3 160 512) [-1,1]
         view: Dict[str, Any] = {
             "img": img_tensor,
             "timestep": torch.tensor(
@@ -304,9 +298,9 @@ def build_demo_reconstruction_views(
             "box_dict": [copy.deepcopy(empty_box_dict)],
         }
         if semantic_family == "SAM2" and semantic_transform is not None:
-            view["sam2_img"] = semantic_transform(resized_image).unsqueeze(0).to(device)
-            gdino_img, _ = GroundingDinoImgNorm(resized_image, None)
-            view["gdino_img"] = gdino_img.unsqueeze(0)
+            view["sam2_img"] = semantic_transform(resized_image).unsqueeze(0).to(device)    # (1 3 512 512) [-2.1179,2.6400]
+            gdino_img, _ = GroundingDinoImgNorm(resized_image, None)                        # (3 417 1334)  [-2.1179 2.6400]
+            view["gdino_img"] = gdino_img.unsqueeze(0)                                      # (1 3 417 1334)
         if semantic_family == "SAM3" and semantic_transform is not None:
             view["sam3_img"] = semantic_transform(resized_image).unsqueeze(0).to(device)
         recon_views.append(view)
@@ -324,12 +318,11 @@ def populate_demo_sam2_box_dicts(
     if len(recon_views) == 0:
         return {"total_boxes": 0, "views_without_boxes": []}
 
-
     total_boxes = 0
     views_without_boxes: List[int] = []
 
     for view_idx, view in enumerate(recon_views):
-        gdino_imgs = view.get("gdino_img")
+        gdino_imgs = view.get("gdino_img")  # (1 3 417 1334)
         if gdino_imgs is None:
             raise ValueError(
                 "SAM2 demo box generation requires 'gdino_img' in reconstruction views."
@@ -337,21 +330,22 @@ def populate_demo_sam2_box_dicts(
 
         batch_box_dicts: List[Dict[str, Any]] = []
         for batch_idx in range(gdino_imgs.shape[0]):
+            #===================================================#
             boxes, confidences, labels = infer_sam2_boxes(
-                gdino_imgs=gdino_imgs[batch_idx:batch_idx + 1],
-                class_names=class_names,
+                gdino_imgs=gdino_imgs[batch_idx : batch_idx + 1],  # (1 3 417 1334)
+                class_names=class_names,        # ['other', 'barrier', 'bicycle', 'bus', 'car', 'construction_vehicle', 'motorcycle', 'pedestrian', 'traffic_cone', 'trailer', 'truck', 'driveable_surface', 'other_flat', 'sidewalk', 'terrain', 'manmade', 'vegetation', 'free']
                 device=device,
-                box_threshold=box_threshold,
-                text_threshold=text_threshold,
+                box_threshold=box_threshold,    # 0.15
+                text_threshold=text_threshold,  # 0.0
             )
             if len(labels) == 0:
                 views_without_boxes.append(view_idx)
             total_boxes += len(labels)
             batch_box_dicts.append(
                 {
-                    "boxes": boxes,
-                    "confidences": confidences,
-                    "labels": labels,
+                    "boxes": boxes,                 # (35 4)
+                    "confidences": confidences,     # (35,)
+                    "labels": labels,               # 35
                 }
             )
 
@@ -393,7 +387,6 @@ def get_allowed_gen_view_ids(
     if len(allowed_ids) == 0:
         return list(range(n_gen_views))
     return sorted(set(idx for idx in allowed_ids if 0 <= idx < n_gen_views))
-
 
 
 def convert_da3_output_to_occany_format(

@@ -1,0 +1,10 @@
+export PY_CACHE_ROOT=/vepfs-mlp2/c20250502/haoce/wangyushen/.cache
+export CONDA_PKGS_DIRS=/vepfs-mlp2/c20250502/haoce/wangyushen/.cache/conda/pkgs
+export PIP_CACHE_DIR=/vepfs-mlp2/c20250502/haoce/wangyushen/.cache/pip
+export TORCH_HOME=$PY_CACHE_ROOT/torch
+export HF_HOME=$PY_CACHE_ROOT/huggingface
+export TRANSFORMERS_CACHE=$HF_HOME/transformers
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+export MPLCONFIGDIR=$PY_CACHE_ROOT/matplotlib
+export NUMBA_CACHE_DIR=$PY_CACHE_ROOT/numba
+export TRITON_CACHE_DIR=$PY_CACHE_ROOT/triton

@@ -20,7 +20,14 @@ import torch.nn as nn
 from itertools import repeat
 import collections.abc
 from torch.nn.functional import scaled_dot_product_attention
-from torch.nn.attention import SDPBackend
+# from torch.nn.attention import SDPBackend
+try:
+    from torch.nn.attention import SDPBackend
+    HAS_SDP_BACKEND = True
+except ImportError:
+    SDPBackend = None
+    HAS_SDP_BACKEND = False
+
 import math
 
 try:
@@ -134,7 +141,7 @@ class Mlp(nn.Module):
         x = self.drop1(x)
         x = self.fc2(x)
         x = self.drop2(x)
-        return x
+        return x    # (2 1 768)
 
 class Attention(nn.Module):
 
@@ -245,8 +252,20 @@ class AttentionFast3r(nn.Module):
             x = (x @ v).transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
             x = self.proj_drop(x)
+        
+        
         elif self.attn_implementation == "flash_attention":
-            with torch.nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            if HAS_SDP_BACKEND:
+                with torch.nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                    dtype = k.dtype
+                    with torch.autocast("cuda", dtype=torch.bfloat16):
+                        x = scaled_dot_product_attention(q, k, v, attn_mask=self.attn_mask, dropout_p=self.dropout_p, is_causal=self.is_causal, scale=scale)
+                    if dtype == torch.float32:  # if input was FP32, cast back to FP32
+                        x = x.to(torch.float32)
+                    x = x.transpose(1, 2).reshape(B, N, C)
+                    x = self.proj(x)
+                    x = self.proj_drop(x)
+            else:
                 dtype = k.dtype
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     x = scaled_dot_product_attention(q, k, v, attn_mask=self.attn_mask, dropout_p=self.dropout_p, is_causal=self.is_causal, scale=scale)
@@ -254,10 +273,23 @@ class AttentionFast3r(nn.Module):
                     x = x.to(torch.float32)
                 x = x.transpose(1, 2).reshape(B, N, C)
                 x = self.proj(x)
-                x = self.proj_drop(x)
+                x = self.proj_drop(x)                
+       
+       
+       
         elif self.attn_implementation == "pytorch_auto":
-            with torch.nn.attention.sdpa_kernel([SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION,
-                                                 SDPBackend.CUDNN_ATTENTION, SDPBackend.FLASH_ATTENTION]):
+            if HAS_SDP_BACKEND:
+                with torch.nn.attention.sdpa_kernel([SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION,
+                                                    SDPBackend.CUDNN_ATTENTION, SDPBackend.FLASH_ATTENTION]):
+                    dtype = k.dtype
+                    with torch.autocast("cuda", dtype=torch.bfloat16):
+                        x = scaled_dot_product_attention(q, k, v, attn_mask=self.attn_mask, dropout_p=self.dropout_p, is_causal=self.is_causal, scale=scale)
+                    if dtype == torch.float32:  # if input was FP32, cast back to FP32
+                        x = x.to(torch.float32)
+                    x = x.transpose(1, 2).reshape(B, N, C)
+                    x = self.proj(x)
+                    x = self.proj_drop(x)
+            else:
                 dtype = k.dtype
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     x = scaled_dot_product_attention(q, k, v, attn_mask=self.attn_mask, dropout_p=self.dropout_p, is_causal=self.is_causal, scale=scale)
@@ -265,7 +297,7 @@ class AttentionFast3r(nn.Module):
                     x = x.to(torch.float32)
                 x = x.transpose(1, 2).reshape(B, N, C)
                 x = self.proj(x)
-                x = self.proj_drop(x)
+                x = self.proj_drop(x)                
         else:
             raise ValueError(f"Unknown attn_implementation: {self.attn_implementation}")
 
@@ -419,7 +451,7 @@ class PositionGetter(object):
             y = torch.arange(h, device=device)
             self.cache_positions[h,w] = torch.cartesian_prod(y, x) # (h, w, 2)
         pos = self.cache_positions[h,w].view(1, h*w, 2).expand(b, -1, 2).clone()
-        return pos
+        return pos  # (5 320 2)
 
 class PatchEmbed(nn.Module):
     """ just adding _init_weights + position getter compared to timm.models.layers.patch_embed.PatchEmbed"""

@@ -23,7 +23,10 @@ from omegaconf import OmegaConf
 
 
 from typing import Union
-from PIL import Image
+
+# from PIL import Image
+from PIL.Image import Image
+
 import numpy as np
 
 

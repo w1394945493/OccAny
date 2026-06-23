@@ -39,8 +39,8 @@ def get_output_resolution(image_size: Tuple[int, int], model_family: str) -> Tup
         raise ValueError(f"Invalid image size: {image_size}")
 
     resize_settings = MODEL_FAMILY_RESIZE_SETTINGS[normalized_model_family]
-    max_dimension = resize_settings["max_dimension"]
-    divisor = resize_settings["divisor"]
+    max_dimension = resize_settings["max_dimension"]    # resize后，最长边的最大值：must3r 512 
+    divisor = resize_settings["divisor"]                # must3r 16
 
     if width >= height:
         scaled_short_side = height * max_dimension / width

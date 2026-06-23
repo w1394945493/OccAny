@@ -164,3 +164,5 @@ third_party/sam3/assets
 # Log files from third-party inference runs
 *.out
 *.err
+ 
+conda_env/

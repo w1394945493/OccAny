@@ -25,12 +25,13 @@ from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 from torch.nn.init import constant_, xavier_uniform_
 
-try:
-    # from grounding_dino.groundingdino import _C
-    from groundingdino import _C
-except:
-    warnings.warn("Import Error: Wrong import path or Failed to load custom C++ ops. Running on CPU mode Only!")
-
+# try:
+#     # from grounding_dino.groundingdino import _C
+#     from groundingdino import _C
+# except:
+#     warnings.warn("Import Error: Wrong import path or Failed to load custom C++ ops. Running on CPU mode Only!")
+# from groundingdino import _C
+from grounding_dino.groundingdino import _C
 
 # helpers
 def _is_power_of_2(n):

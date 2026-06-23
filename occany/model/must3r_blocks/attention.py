@@ -36,15 +36,15 @@ class CoreAttention (nn.Module):
         self.attn_drop_val = attn_drop
 
     def attention(self, q, k, v, qpos=None, kpos=None, attn_mask=None):
-        B, H, Nq, D = q.shape
-        C = D * H
-        assert H == self.num_heads
-
-        if self.pos_embed is not None:
-            q = self.pos_embed(q, qpos)
-            k = self.pos_embed(k, kpos)
+        B, H, Nq, D = q.shape           # (5 16 320 64)
+        C = D * H                       # 1024 = 16x64
+        assert H == self.num_heads      # 16
+        # pos_embed: cuRoPE2D 旋转位置编码
+        if self.pos_embed is not None:  # cuRoPE2D
+            q = self.pos_embed(q, qpos) # (5 16 320 64)
+            k = self.pos_embed(k, kpos) # (5 16 320 64)
         
-        if is_memory_efficient_attention_enabled() and (attn_mask is None or attn_mask.dtype != torch.bool):
+        if is_memory_efficient_attention_enabled() and (attn_mask is None or attn_mask.dtype != torch.bool):    # 分支1：xFormer内存高效注意力
             assert has_xformers
             # q, k, v are batch, num_heads, seqlen, K
             # Supported formats for inputs/outputs:
@@ -61,7 +61,7 @@ class CoreAttention (nn.Module):
             q, k, v = map(lambda val: val.reshape(B * self.num_heads, -1, D), (q, k, v))
             x = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=attn_mask, p=self.attn_drop_val)
             x = x.reshape(B, self.num_heads, -1, D).transpose(1, 2).reshape(B, -1, C)
-        elif has_scaled_dot_product_attention and (attn_mask is None or attn_mask.dtype == torch.bool):
+        elif has_scaled_dot_product_attention and (attn_mask is None or attn_mask.dtype == torch.bool):         # 原生torch.nn.functional.scaled_dot_product_attention(标准MHA的快速实现)
             if q.dtype != v.dtype:
                 q = q.to(v.dtype)
             if k.dtype != v.dtype:
@@ -69,13 +69,13 @@ class CoreAttention (nn.Module):
             x = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask,
                                                                  dropout_p=self.attn_drop_val)
             x = x.transpose(1, 2).reshape(B, Nq, C)
-        else:
+        else:   # 手动点积计算注意力
             assert attn_mask is None
             attn = (q @ k.transpose(-2, -1)) * self.scale
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = (attn @ v).transpose(1, 2).reshape(B, Nq, C)
-        return x
+        return x    # (5 320 1024)
 
 
 class Attention(CoreAttention):
@@ -89,13 +89,13 @@ class Attention(CoreAttention):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x, xpos):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).transpose(1, 3)
-        q, k, v = [qkv.select(2, i) for i in range(3)]
-        x = self.attention(q, k, v, xpos, xpos)
-        x = self.proj(x)
+        B, N, C = x.shape                                                                       # (5 320 1024)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).transpose(1, 3) # (5 16 3 320 64)
+        q, k, v = [qkv.select(2, i) for i in range(3)]                                          # (5 16 320 64)
+        x = self.attention(q, k, v, xpos, xpos)                                                 # (5 320 1024)
+        x = self.proj(x)                                                                        # (5 320 1024)
         x = self.proj_drop(x)
-        return x
+        return x                                                                                # (5 320 1024)
 
 
 class CrossAttention(CoreAttention):

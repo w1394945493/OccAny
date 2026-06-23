@@ -318,9 +318,9 @@ def infer_sam2_boxes(
     box_threshold=0.1,
     text_threshold=0.0,
 ):
-    assert gdino_imgs.shape[0] == 1, "Only support batch size of 1"
+    assert gdino_imgs.shape[0] == 1, "Only support batch size of 1" # (1 3 417 1334)
     assert len(gdino_imgs.shape) == 4, "B, C, H, W"
-
+    # grounding_dino_model
     model_manager = ModelManager(device)
     grounding_dino_model = model_manager.get_grounding_dino()
 
@@ -328,17 +328,17 @@ def infer_sam2_boxes(
     normalized_to_original = {}
     for original_name, normalized_name in zip(class_names, normalized_class_names):
         normalized_to_original.setdefault(normalized_name, original_name)
-    text = " ".join([f"{name}." for name in normalized_class_names])
+    text = " ".join([f"{name}." for name in normalized_class_names])    # 将字符串变成一句话. grounding_dino中的工作
 
     boxes, confidences, labels = predict(
         model=grounding_dino_model,
-        image=gdino_imgs[0],
-        caption=text,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
+        image=gdino_imgs[0],            # (3 417 1334)
+        caption=text,                   # 'other. barrier. ...'
+        box_threshold=box_threshold,    # 0.15
+        text_threshold=text_threshold,  # 0.0
         device=device,
         remove_combined=True,
-    )
+    )   
 
     valid_indices = [i for i, label in enumerate(labels) if label in normalized_to_original]
     boxes = boxes[valid_indices]

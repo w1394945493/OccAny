@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchvision.ops.boxes import nms
-from transformers import AutoTokenizer, BertModel, BertTokenizer, RobertaModel, RobertaTokenizerFast
+# from transformers import AutoTokenizer, BertModel, BertTokenizer, RobertaModel, RobertaTokenizerFast
 
 # from grounding_dino.groundingdino.util import box_ops, get_tokenlizer
 # from grounding_dino.groundingdino.util.misc import (
@@ -120,9 +120,17 @@ class GroundingDINO(nn.Module):
         self.dn_label_noise_ratio = dn_label_noise_ratio
         self.dn_labelbook_size = dn_labelbook_size
 
+        # # bert
+        # self.tokenizer = get_tokenlizer.get_tokenlizer(text_encoder_type)
+        # self.bert = get_tokenlizer.get_pretrained_language_model(text_encoder_type)
         # bert
-        self.tokenizer = get_tokenlizer.get_tokenlizer(text_encoder_type)
-        self.bert = get_tokenlizer.get_pretrained_language_model(text_encoder_type)
+        if text_encoder_type == "bert-base-uncased":
+            model_url = '/vepfs-mlp2/c20250502/haoce/wangyushen/OccAny/checkpoints/bert-base-uncased'
+            # self.tokenizer = get_tokenlizer.get_tokenlizer(text_encoder_type)
+            # self.bert = get_tokenlizer.get_pretrained_language_model(text_encoder_type)
+            self.tokenizer = get_tokenlizer.get_tokenlizer(model_url)
+            self.bert = get_tokenlizer.get_pretrained_language_model(model_url)
+        
         self.bert.pooler.dense.weight.requires_grad_(False)
         self.bert.pooler.dense.bias.requires_grad_(False)
         self.bert = BertModelWarper(bert_model=self.bert)
@@ -260,14 +268,14 @@ class GroundingDINO(nn.Module):
             captions = kw["captions"]
         else:
             captions = [t["caption"] for t in targets]
-
+        # bert tokenizer
         # encoder texts
         tokenized = self.tokenizer(captions, padding="longest", return_tensors="pt").to(
             samples.device
-        )
+        ) 
         (
-            text_self_attention_masks,
-            position_ids,
+            text_self_attention_masks,                      # (1 44 44)
+            position_ids,                                   # (1 44)
             cate_to_token_mask_list,
         ) = generate_masks_with_special_tokens_and_transfer_map(
             tokenized, self.specical_tokens, self.tokenizer
@@ -291,10 +299,10 @@ class GroundingDINO(nn.Module):
             # import ipdb; ipdb.set_trace()
             tokenized_for_encoder = tokenized
 
-        bert_output = self.bert(**tokenized_for_encoder)  # bs, 195, 768
+        bert_output = self.bert(**tokenized_for_encoder)  # bs, 195, 768                    # last_hidden_state:(1 44 768)
 
-        encoded_text = self.feat_map(bert_output["last_hidden_state"])  # bs, 195, d_model
-        text_token_mask = tokenized.attention_mask.bool()  # bs, 195
+        encoded_text = self.feat_map(bert_output["last_hidden_state"])  # bs, 195, d_model  # (1 44 768) -> (1 44 256)
+        text_token_mask = tokenized.attention_mask.bool()  # bs, 195                        # (1 44)
         # text_token_mask: True for nomask, False for mask
         # text_self_attention_masks: True for nomask, False for mask
 

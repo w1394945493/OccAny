@@ -3,8 +3,8 @@ scipy==1.11.4
 gradio
 matplotlib
 tqdm
-opencv-python
-scipy
+# opencv-python
+# scipy
 einops
 gdown
 trimesh
@@ -44,6 +44,6 @@ pycolmap
 viser
 supervision
 pyyaml
-scipy
+# scipy
 filelock
 idr-torch

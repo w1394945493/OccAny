@@ -8,7 +8,7 @@
 import sys
 import os.path as path
 HERE_PATH = path.normpath(path.dirname(__file__))
-CROCO_REPO_PATH = path.normpath(path.join(HERE_PATH, '../../../croco'))
+CROCO_REPO_PATH = path.normpath(path.join(HERE_PATH, '../../../croco')) # croco: 用于3D视觉/多视角几何理解的预训练Transformer框架
 CROCO_MODELS_PATH = path.join(CROCO_REPO_PATH, 'models')
 # check the presence of models directory in repo to be sure its cloned
 if path.isdir(CROCO_MODELS_PATH):

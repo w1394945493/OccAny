@@ -45,7 +45,7 @@ def run_feedback_layers(
     if feedback_layer is None:
         return mem
     blk, blk_ln = feedback_layer, feedback_norm
-    offset = blk(blk_ln(mem[-1]))
+    offset = blk(blk_ln(mem[-1]))   # (1 642 768)
     new_mem = [
         memi + offset for memi in mem[:-1]
     ]

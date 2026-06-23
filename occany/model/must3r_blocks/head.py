@@ -44,9 +44,9 @@ def transpose_to_landscape(head, activate=True):
     def wrapper_yes(decout, true_shape):
         B = len(true_shape)
         # by definition, the batch is in landscape mode so W >= H
-        H, W = int(true_shape.min()), int(true_shape.max())
+        H, W = int(true_shape.min()), int(true_shape.max()) # 160 512
 
-        height, width = true_shape.T
+        height, width = true_shape.T 
         is_landscape = (width >= height)
         is_portrait = ~is_landscape
 

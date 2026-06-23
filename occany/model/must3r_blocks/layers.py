@@ -62,8 +62,8 @@ class Block(nn.Module):
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x, xpos=None):
-        x = x + self.drop_path(self.attn(self.norm1(x), xpos))
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        x = x + self.drop_path(self.attn(self.norm1(x), xpos))  # (5 320 1024)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))         # (5 320 1024)
         return x
     
 
@@ -95,11 +95,11 @@ class CachedDecoderBlock(nn.Module):
     def prepare_y(self, y):
         if self.memory_mode == 'raw':
             return y
-        y_ = self.norm_y(y)
+        y_ = self.norm_y(y) # (1 642 768)
         if self.memory_mode == 'norm_y':
             return y_.to(y.dtype)
         k, v = self.cross_attn.prepare_kv(y_, y_)
-        return torch.concatenate([k, v], dim=-1)
+        return torch.concatenate([k, v], dim=-1)    # (1 642 768) (1 642 768)
 
     def forward(self, x, y, xpos=None, ypos=None, ca_attn_mask=None, inject_pose_token=None):
         
