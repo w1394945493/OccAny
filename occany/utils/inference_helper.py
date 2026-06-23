@@ -321,7 +321,7 @@ def populate_demo_sam2_box_dicts(
     total_boxes = 0
     views_without_boxes: List[int] = []
 
-    for view_idx, view in enumerate(recon_views):
+    for view_idx, view in enumerate(recon_views):   # len(recon_views):5
         gdino_imgs = view.get("gdino_img")  # (1 3 417 1334)
         if gdino_imgs is None:
             raise ValueError(
@@ -349,7 +349,7 @@ def populate_demo_sam2_box_dicts(
                 }
             )
 
-        view["box_dict"] = batch_box_dicts
+        view["box_dict"] = batch_box_dicts          # 增加到每个bs中
 
     return {
         "total_boxes": total_boxes,

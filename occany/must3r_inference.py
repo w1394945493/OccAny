@@ -22,31 +22,31 @@ import copy
 
 
 
-
+# 把网络预测的pointmap，pose等结果转换成可用的3d点云，局部坐标系点云，置信度，rgb颜色，相机位姿，焦距，RayMap
 @torch.autocast("cuda", dtype=torch.float32)
 def postprocess(pointmaps, pose_out=None, pointmaps_activation=ActivationType.NORM_EXP, 
                 compute_cam=False, compute_raymap=False, pose_type="lvsm"):
     out = {}
     channels = pointmaps.shape[-1]
-    out['pts3d'] = pointmaps[..., :3]
-    out['pts3d'] = apply_activation(out['pts3d'], activation=pointmaps_activation)
+    out['pts3d'] = pointmaps[..., :3]               # 0-2维 世界坐标点
+    out['pts3d'] = apply_activation(out['pts3d'], activation=pointmaps_activation) # (1 5 160 512 3) # 恢复真实深度尺度
     if channels >= 6:
-        out['pts3d_local'] = pointmaps[..., 3:6]
+        out['pts3d_local'] = pointmaps[..., 3:6]    # 3-5维：局部坐标点
         out['pts3d_local'] = apply_activation(out['pts3d_local'], activation=pointmaps_activation)
-    if channels == 4 or channels >= 7:
+    if channels == 4 or channels >= 7:              # 6维：置信度
         out['conf'] = 1.0 + pointmaps[..., 6].exp()
-    if channels == 10:
+    if channels == 10:                              # 7-9维：RGB
         eps = 1e-6
         out['rgb'] = pointmaps[..., 7:].sigmoid() * (1 - 2 * eps) + eps
         out['rgb'] = (out['rgb'] - 0.5) * 2
       
-    if compute_cam:
+    if compute_cam: 
         H, W = out['conf'].shape[-2:]
         pp = torch.tensor((W / 2, H / 2), device=out['pts3d'].device)
-        focal = estimate_focal_knowing_depth(out['pts3d_local'][:, 0], pp, focal_mode='weiszfeld')        
+        focal = estimate_focal_knowing_depth(out['pts3d_local'][:, 0], pp, focal_mode='weiszfeld') # 估计焦距 利用3D点+图像坐标，反求f        
         out['focal'] = focal[:, None].expand(-1, out['pts3d_local'].shape[1])
 
-        batch_dims = out['pts3d'].shape[:-3]
+        batch_dims = out['pts3d'].shape[:-3]    # 根据世界坐标系和局部坐标系的关系：求解相机位姿
         num_batch_dims = len(batch_dims)
         R, T = roma.rigid_points_registration(
             out['pts3d_local'].reshape(*batch_dims, -1, 3),
@@ -595,10 +595,10 @@ def inference_occany_gen(img_views, gen_views,
                 x=x_img,                    # (1 5 320 1024)
                 pos=pos_img,                # (1 5 320 2)
                 true_shape=true_shape_img,  # (1 5 2)
-                mem_batches=mem_batches,
+                mem_batches=mem_batches,    # [2 1 1 1]
                 verbose=False,
-            )
-            
+            )   # img_out_0:(1 5 160 512 10)-pointmap pose_img_out_0: 位姿(1 5 7)  sam_feats_0: 3:(1 5 256 32 32) (1 5 64 64 64) (1 5 32 128 128)
+            # 
             img_out, pose_img_out, sam_feats = inference_render(
                 decoder=decoder,
                 x=x_img,
@@ -612,10 +612,10 @@ def inference_occany_gen(img_views, gen_views,
         # IMPORTANT: Even though created in no_grad(), these are "inference tensors"
         # that cannot be used in gradient-enabled contexts. .detach() creates new
         # tensor views that CAN participate in autograd (as leaves with no history)
-        x_img = x_img.detach()
-        pos_img = pos_img.detach()
+        x_img = x_img.detach()      # (1 5 320 1024)
+        pos_img = pos_img.detach()  # (1 5 320 2)
         mem = [t.detach() if torch.is_tensor(t) else t for t in mem]
-
+    # 后处理：求解3D pointmap世界坐标，局部坐标，置信度，RGB 相机焦距，及相机位姿
     # Postprocess reconstruction outputs
     with torch.autocast("cuda", dtype=torch.float32):
         img_out = postprocess(img_out, pose_img_out, 
@@ -649,7 +649,7 @@ def inference_occany_gen(img_views, gen_views,
                 align_corners=False,
             )
             sam_feat_var = sam_feat_var.reshape(B, nimgs, -1, H, W).permute(0, 1, 3, 4, 2)
-            sam_feats_resized.append(sam_feat_var)
+            sam_feats_resized.append(sam_feat_var)  # 3:(1 5 160 512 256) (1 5 160 512 64) (1 5 160 512 32)
     else:
         # Create zero tensors with same shape as SAM features would have
         if sam_model == "SAM2":
@@ -684,29 +684,31 @@ def inference_occany_gen(img_views, gen_views,
         # No additional per-point features (e.g., pts3d_local-only conditioning)
         pts_features = torch.zeros(B, nimgs, H, W, 0, device=device, dtype=pts3d.dtype)
    
+    #=======================================================================================#
+    # 3.2 新视角渲染：在重建相机轨迹上预测任意新视点的点图和SAM2-like特征
     raymap_out = None
     x_ray = None
     sam_feats_raymap = None
     recon_2_gen_mapping = None
 
-    if gen_novel_poses:
+    if gen_novel_poses: # 根据已有相机位姿，生成新的相机位姿
         gen_views = []
         n_intervals = max(nimgs - 1, 0)
-        recon_poses = img_out['c2w']
+        recon_poses = img_out['c2w']    # (1 5 4 4) # 根据重建相机位置生成新的虚拟相机视角
 
         # Allow novel pose generation even with single frame (nimgs=1)
         if nimgs > 0 and views_per_interval > 0:
 
             gen_poses, recon_2_gen_mapping = generate_intermediate_poses(
-                recon_poses,
-                views_per_interval,
+                recon_poses,        # (1 5 4 4)
+                views_per_interval, # 2
                 device,
-                rotate_angle=gen_rotate_novel_poses_angle,
-                forward=gen_forward_novel_poses_dist,
-                num_seed_rotations=num_seed_rotations,
-                seed_rotation_angle=seed_rotation_angle,
-                seed_translation_distance=seed_translation_distance,
-            )
+                rotate_angle=gen_rotate_novel_poses_angle,  # 30
+                forward=gen_forward_novel_poses_dist,       # 5 
+                num_seed_rotations=num_seed_rotations,      # 0
+                seed_rotation_angle=seed_rotation_angle,    # None
+                seed_translation_distance=seed_translation_distance,    # 2
+            )   # (1 30 4 4)
             n_gen_views = gen_poses.shape[1]
 
             for v in range(n_gen_views):
@@ -716,8 +718,9 @@ def inference_occany_gen(img_views, gen_views,
                 view['is_raymap'] = True
                 gen_views.append(view)
     
-    if gen_views is not None and len(gen_views) > 0:        
-        raymap_c2w = torch.stack([v['camera_pose'] for v in gen_views], dim=1).to(device)
+    # 新视角渲染
+    if gen_views is not None and len(gen_views) > 0: # 给定一个新的相机位置，模型预测在该视角下的场景表示        
+        raymap_c2w = torch.stack([v['camera_pose'] for v in gen_views], dim=1).to(device) # 收集新视角camera pose
         # Batch the conditioning creation to reduce memory usage
         # raymap_c2w shape: [B, nraymaps, 4, 4], we batch over nraymaps dimension
         B, nraymaps = raymap_c2w.shape[:2]
@@ -725,7 +728,7 @@ def inference_occany_gen(img_views, gen_views,
             raymap_batch_size_eff = nraymaps
         else:
             raymap_batch_size_eff = min(raymap_batch_size, nraymaps)
-        for raymap_start in range(0, nraymaps, raymap_batch_size_eff):
+        for raymap_start in range(0, nraymaps, raymap_batch_size_eff): # 分batch处理raymap
             raymap_end = min(raymap_start + raymap_batch_size_eff, nraymaps)
             gen_views_batch = gen_views[raymap_start:raymap_end]
             # Get raymap slices (batch over dimension 1)
@@ -745,6 +748,8 @@ def inference_occany_gen(img_views, gen_views,
 
             # Generation path with gradients (trainable decoder_gen)
             with torch.autocast("cuda", dtype=dtype):
+                # ===============================================#
+                # 渲染encoder：将raymap编码成token
                 # Use detached tensors from frozen reconstruction
                 x_ray, pos_ray = inference_encoder_raymap(
                     encoder=raymap_encoder,
@@ -757,7 +762,7 @@ def inference_occany_gen(img_views, gen_views,
                     mem_timesteps=img_timesteps,
                     timesteps=raymap_timesteps,
                 )
-
+                # 渲染decoder：生成新视角
                 raymap_out_batch, pose_raymap_out, sam_feats_raymap_batch = inference_render(
                     decoder=decoder_gen,
                     x=x_ray,
@@ -768,6 +773,7 @@ def inference_occany_gen(img_views, gen_views,
                     verbose=False,
                 )
 
+            # 后处理：将网络输出转换成可用形式
             with torch.autocast("cuda", dtype=torch.float32):
                 raymap_out_batch = postprocess(raymap_out_batch, 
                                 pose_out=raymap_c2w_batch, 
@@ -822,7 +828,7 @@ def inference_occany_gen(img_views, gen_views,
             del cond_features_batch, raymaps_batch, raymap_out_batch
             
     
-    return img_out, raymap_out, x_ray, sam_feats, sam_feats_raymap, recon_2_gen_mapping
+    return img_out, raymap_out, x_ray, sam_feats, sam_feats_raymap, recon_2_gen_mapping # img_out['pts3d']:(1 5 160 512 3) raymap_out['pts3d']:(1 30 160 512 3)
 
 
     

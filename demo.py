@@ -298,18 +298,25 @@ if __name__ == '__main__':
         }
         B = recon_views[0]["img"].shape[0]
         _, C, H, W = recon_views[0]["img"].shape    # (1 3 160 512)
-
+        # ======================================================#
+        # 1. GroundingDino预测框prompt：
+        # GroundingDino：使用GroundingDino对真实输入视角进行开放词汇检测，为每个图生成SAM2语义分割和类别信息，作为后续SAM2语义分割的提示
         box_summary = populate_demo_sam2_box_dicts(
-            recon_views=recon_views,
+            recon_views=recon_views, # 返回给 recon_views[0]['box_dict']
             class_names=CLASS_NAMES,
             device=args.device,
         )
+        
         with torch.inference_mode():
             x_ray = None
             sam_feats = None
             sam_feats_raymap = None
             recon_2_gen_mapping = None
             generated_output_c2w = None
+            # =================================================#
+            # 2. 场景重建+新视角渲染：场景重建：预测pointmap，sam2特征和相机位姿；新视角渲染：根据新视角位姿，预测pointmap和sam2特征(不再预测相机位姿)
+            # 2.1 场景重建：输入多视角RGB图像，输入多视角RGB图像，通过must3R encoder-decoder预测pointmap，相机位姿，点云置信度，并额外提取SAM2特征
+            # 2.2 新视角生成：根据预测相机轨迹生成虚拟相机位姿，并通过轻量化encoder和must3R式decoder预测新视角pointmap，点云置信度和SAM2特征
             img_out, raymap_out, x_ray, sam_feats, sam_feats_raymap, recon_2_gen_mapping = inference_occany_gen(
                 recon_views,
                 None,
@@ -333,7 +340,7 @@ if __name__ == '__main__':
                 key_to_get_pts3d=args.key_to_get_pts3d,             
                 dtype=torch.float32,
                 sam_model=sam_model_for_inference,                              # 'SAM2'
-            )
+            )   # 重建 pts(1 5 160 512 3) 渲染 pts(1 30 160 512 3) x_ray(1 2 320 1024) 重建 sam(1 5 256 32 32) 渲染 sam(1 30 256 32 32)
             
             sam_feats_img_and_raymap = None
             sam3_recon_distill_feats = sam_feats[:3] if sam_feats is not None else None
@@ -343,22 +350,25 @@ if __name__ == '__main__':
                 sam_feats_img_and_raymap = [
                     torch.cat([sam_feats[level_idx], sam_feats_raymap[level_idx]], dim=1)
                     for level_idx in range(min(len(sam_feats), len(sam_feats_raymap)))
-                ]
+                ]   # 将重建和新视图渲染阶段预测的sam特征拼接
         
         res = img_out
         imgs = [v['img'] for v in recon_views]
-        imgs = torch.stack(imgs, dim=1)        
+        imgs = torch.stack(imgs, dim=1) # (1 5 3 160 512)        
 
         recon_semantic_2ds = None
         gen_semantic_2ds = None
         sam2_feats_batch = []
-
+        
+        # =========================================================#
+        # 3. 2D语义标注生成：给原始重建视角 + 生成新视角
+        # 输入GroundingDINO检测框，重建视角/新视角渲染的SAM feature预测每个像素对应语义类别ID
         # 'distill@SAM2_large'
         if args.semantic is not None:
             feat_src = 'distill'
             n_recon_views = len(recon_views) # 5
             n_gen_views = 0 if raymap_out is None else raymap_out['pts3d'].shape[1] # 30
-            n_recon_and_gen_views = n_recon_views + n_gen_views
+            n_recon_and_gen_views = n_recon_views + n_gen_views # 5+30=35
 
             semantic_fill_value = empty_class
             other_class =  other_class
@@ -367,7 +377,7 @@ if __name__ == '__main__':
                 (B, n_recon_and_gen_views, H, W),
                 semantic_fill_value,
                 dtype=torch.uint8,
-            )
+            )   # (1 35 160 512) 创建semantic存储，每个像素存类别ID
             if semantic_family == "SAM2":
                 sam2_model_type = 'SAM2_large'
                 sam2_imgs_recon = None
@@ -375,25 +385,25 @@ if __name__ == '__main__':
                 class_names = CLASS_NAMES
                 class2idx = {name: idx for idx, name in enumerate(class_names)}
                 ignore_ids = {empty_class, other_class, 255}
-
+                # 遍历batch
                 for batch_i in range(B):
-                    
+                    # 取SAM feature
                     sam2_feats = {
-                        "image_embed": sam_feats_img_and_raymap[0][batch_i],
+                        "image_embed": sam_feats_img_and_raymap[0][batch_i],    # (35 256 32 32)
                         "high_res_feats": [
-                            sam_feats_img_and_raymap[2][batch_i],
-                            sam_feats_img_and_raymap[1][batch_i],
+                            sam_feats_img_and_raymap[2][batch_i],               # (35 32 128 128)
+                            sam_feats_img_and_raymap[1][batch_i],               # (35 64 64 64)
                         ],
                     }
                     sam2_feats_batch.append(sam2_feats)
-                    
+                    # 对真实视角做检测框语义
                     for recon_view_i in range(n_recon_views):
-                        box_dict = recon_views[recon_view_i]['box_dict'][batch_i]
-                        boxes = box_dict['boxes']
-                        confidences = box_dict['confidences']
+                        box_dict = recon_views[recon_view_i]['box_dict'][batch_i] # 取检测框：
+                        boxes = box_dict['boxes']               # (35 4)
+                        confidences = box_dict['confidences']   # (35)
                         labels = box_dict['labels']
 
-                        valid_indices = [idx for idx, label in enumerate(labels) if label in class2idx]
+                        valid_indices = [idx for idx, label in enumerate(labels) if label in class2idx] # 过滤无效类别
                         if len(valid_indices) == 0:
                             continue
 
@@ -408,7 +418,7 @@ if __name__ == '__main__':
                         boxes_np = boxes_np.reshape(-1, 4)[valid_indices]
                         conf_np = conf_np.reshape(-1)[valid_indices]
                         label_ids = [class2idx[labels[idx]] for idx in valid_indices]
-
+                        # 获取对应的新视角
                         corresponding_gen_view_ids = [
                             view_idx + n_recon_views
                             for view_idx in recon_2_gen_mapping[recon_view_i]
@@ -416,13 +426,13 @@ if __name__ == '__main__':
                         for gen_view_i in range(
                             0,
                             max(1, len(corresponding_gen_view_ids)),
-                            args.batch_gen_view,
+                            args.batch_gen_view, # 2
                         ):
                             recon_and_gen_ids = [recon_view_i] + corresponding_gen_view_ids[
-                                gen_view_i:gen_view_i + args.batch_gen_view
-                            ]
+                                gen_view_i:gen_view_i + args.batch_gen_view 
+                            ]   # 每次处理三个视角的sam语义图
 
-                            sam2_feat_list = []
+                            sam2_feat_list = [] # 准备sam2输入feature
                             for view_id in recon_and_gen_ids:
                                 sam2_feat_list.append(
                                     {
@@ -433,14 +443,15 @@ if __name__ == '__main__':
                                         "image_embed": sam2_feats['image_embed'][view_id:view_id + 1],
                                     }
                                 )
+                            # bbox使用原始视角的bbox
                             sem2d = infer_semantic_from_boxes_and_sam2_feat_list(
                                 sam2_model_type,
                                 H,
                                 W,
-                                label_ids,
+                                label_ids,      # (35)
                                 ignore_ids,
-                                boxes_np,
-                                conf_np,
+                                boxes_np,       # (35 4) 提示框来自于原始视角，新视角的精确位置依赖于SAM2 feature propagation 论文3.3 利用sam2的视频跟踪能力，将语义mask传播至整个场景
+                                conf_np,        
                                 other_class=other_class,
                                 empty_class=empty_class,
                                 use_sam_video=True,
@@ -451,7 +462,7 @@ if __name__ == '__main__':
                                 device=args.device,
                                 box_conf_thres=args.box_conf_thres,
                                 merge_masks=args.merge_masks,
-                            )
+                            )   # (3 160 512) 每次处理3个视角
 
                             for local_idx, view_i in enumerate(recon_and_gen_ids):
                                 semantic_2ds[batch_i, view_i] = torch.from_numpy(sem2d[local_idx])
@@ -461,45 +472,47 @@ if __name__ == '__main__':
                 
                 recon_semantic_2ds = semantic_2ds[:, :n_recon_views]
                 gen_semantic_2ds = semantic_2ds[:, n_recon_views:] if n_gen_views > 0 else None
-                
+        
+        # =====================================================#
+        # 4. pointmap结果整理              
         outputs = {}
-        pts3d_render = res[args.key_to_get_pts3d]
-        pts3d_local_render = res['pts3d_local']
-        conf_render = res['conf']
-        outputs["render"] = {
-            "pts3d": pts3d_render,
-            "pts3d_local": pts3d_local_render,
-            "conf": conf_render,
-            "colors": imgs,
-            "focal": res['focal'],
-            "c2w": res['c2w'],
-            "estimated_camera_poses": res['c2w_pose'] if 'c2w_pose' in res else res['c2w'],
-            "semantic_2ds": recon_semantic_2ds,
-            "is_recon": torch.ones(B, pts3d_render.shape[1], dtype=torch.bool, device=pts3d_render.device),
+        pts3d_render = res[args.key_to_get_pts3d]   # (1 5 160 512 3) 3D点图全局坐标
+        pts3d_local_render = res['pts3d_local']     # (1 5 160 512 3)
+        conf_render = res['conf']                   # (1 5 160 512)
+        outputs["render"] = {                       # 重建结果
+            "pts3d": pts3d_render,                  # (1 5 160 512 3)
+            "pts3d_local": pts3d_local_render,      # (1 5 160 512 3)
+            "conf": conf_render,                    # (1 5 160 512)
+            "colors": imgs,                         # (1 5 3 160 512)
+            "focal": res['focal'],                  # (1 5)
+            "c2w": res['c2w'],                      # (1 5 4 4)
+            "estimated_camera_poses": res['c2w_pose'] if 'c2w_pose' in res else res['c2w'], # (1 5 4 4)
+            "semantic_2ds": recon_semantic_2ds,     # (1 5 160 512)
+            "is_recon": torch.ones(B, pts3d_render.shape[1], dtype=torch.bool, device=pts3d_render.device), # (1 5) 全为True
             # "c2w_pose": res['c2w_pose']
         }
-
-        pts3d_gen = raymap_out[args.key_to_get_pts3d]
-        pts3d_local_gen = raymap_out['pts3d_local']
-        conf_gen = raymap_out['conf']
+        # 新视图渲染结果
+        pts3d_gen = raymap_out[args.key_to_get_pts3d]   # (1 30 160 512 3)
+        pts3d_local_gen = raymap_out['pts3d_local']     # (1 30 160 512 3)
+        conf_gen = raymap_out['conf']                   # (1 30 160 512)
         render_gen_c2w = generated_output_c2w
         if render_gen_c2w is None:
-            render_gen_c2w = raymap_out.get('c2w_input')
+            render_gen_c2w = raymap_out.get('c2w_input')    # (1 30 4 4) 渲染阶段不再预测相机位姿，直接使用虚拟相机位姿
         if render_gen_c2w is None:
             render_gen_c2w = raymap_out['c2w']
 
         outputs["render_gen"] = {
-            "pts3d": pts3d_gen,
-            "pts3d_local": pts3d_local_gen,
-            "conf": conf_gen,
+            "pts3d": pts3d_gen,                 # (1 30 160 512 3)
+            "pts3d_local": pts3d_local_gen,     # (1 30 160 512 3)
+            "conf": conf_gen,                   # (1 30 160 512)
             "colors": torch.zeros(B, pts3d_gen.shape[1], 3, H, W, device=pts3d_gen.device),
-            "focal": raymap_out['focal'],
-            "c2w": render_gen_c2w,
-            "semantic_2ds": gen_semantic_2ds,
+            "focal": raymap_out['focal'],       # (1 30)
+            "c2w": render_gen_c2w,              # (1 30 4 4)
+            "semantic_2ds": gen_semantic_2ds,   # (1 30 160 512)
             "is_recon": torch.zeros(B, pts3d_gen.shape[1], dtype=torch.bool, device=pts3d_gen.device),
             # "c2w_pose": gen_out['c2w_pose']
         }
-
+        # 将重建 和 新视角渲染 两部分结果整合
         outputs['render_recon_gen'] = {
             "pts3d": torch.cat([outputs['render']['pts3d'], outputs['render_gen']['pts3d']], dim=1),
             "pts3d_local": torch.cat([outputs['render']['pts3d_local'], outputs['render_gen']['pts3d_local']], dim=1),
@@ -515,12 +528,16 @@ if __name__ == '__main__':
             "is_recon": torch.cat([outputs['render']['is_recon'], outputs['render_gen']['is_recon']], dim=1),
             # "c2w_pose": torch.cat([outputs['render']['c2w_pose'], outputs['render_gen']['c2w_pose']], dim=1)
         }
-
+        
+        # =====================================================#
+        # 逐场景保存3D点云，并把点云转换成occupancy voxel预测
         for j in tqdm(range(B), leave=False):
 
             frame_id = data['frame_id'][j]
             voxel_pred_save_dir = os.path.join(args.output_dir, f"{frame_id}_{args.model}")
             os.makedirs(voxel_pred_save_dir, exist_ok=True)
+            # =====================================================#
+            # 保存点云级别npy
             for name, output in outputs.items():
                 has_semantic_output = output.get("semantic_2ds") is not None
                 colors_hwc = output['colors'][j].permute(0, 2, 3, 1).cpu().numpy()  # (5 160 512 3)
@@ -538,40 +555,48 @@ if __name__ == '__main__':
                 save_path = os.path.join(voxel_pred_save_dir, f"pts3d_{name}.npy")
                 np.save(save_path, save_dict)
             
+            # =====================================================#
+            # 准备voxel参数
             grid_size = tuple(occ_size)
             voxel_predictions_dict = {
-                "estimated_input_camera_poses": outputs['render']['estimated_camera_poses'][j].cpu().numpy(),   # (5 4 4)
+                "estimated_input_camera_poses": outputs['render']['estimated_camera_poses'][j].cpu().numpy(),   # (5 4 4) 相机位姿
                 "estimated_input_intrinsics": build_intrinsics_from_focal(
                     outputs['render']['focal'][j],
                     H,
                     W,
-                ).cpu().numpy(),
+                ).cpu().numpy(), # 只保存真实输入相机位姿
                 "estimated_input_images": convert_images_to_uint8_hwc(outputs['render']['colors'][j]),
                 "voxel_size": voxel_size,                       # 0.4
                 "voxel_origin": voxel_origin.cpu().numpy(),     # (3) [-40 -40 -3.6]
             }
-
+            # 处理真实重建点云
             recon_output = outputs['render']
             # Process render (reconstruction) output
-            render_conf_mask = recon_output['conf'][j] > recon_conf_thres
+            render_conf_mask = recon_output['conf'][j] > recon_conf_thres # confidence过滤
             render_pts3d_th = recon_output['pts3d'][j][render_conf_mask]
             render_conf_th = recon_output['conf'][j][render_conf_mask]
 
             render_semantic_2ds_th = recon_output.get('semantic_2ds', [None])[j]
             render_semantic_2ds_th = render_semantic_2ds_th.to(render_conf_mask.device)
-            render_semantic_2ds_th = render_semantic_2ds_th[render_conf_mask]
+            render_semantic_2ds_th = render_semantic_2ds_th[render_conf_mask]                               # mask:(5 160 512) -> sum():296542
             render_has_semantic = True
 
             # Create and save render voxel prediction
-            render_pts3d_in_velo = transform_points_torch(T=T_cam_to_voxel.float(), points=render_pts3d_th)
+            # 点云坐标转换：将点云坐标转换到体素坐标系下
+            render_pts3d_in_velo = transform_points_torch(T=T_cam_to_voxel.float(), points=render_pts3d_th) # 点云坐标转换 (296542 3)
+            # ===============================================#
+            # 5.点云 -> 体素 预测：点云体素化流程将3D点坐标根据体素大小和原点映射到体素网格，通过三线性插值将点的占用信息和语义置信度分配到邻近体素，并聚合得到每个体素的占用状态与语义类别，最终生成3D语义体素预测。
+            # 3D占用预测结果通过聚合所有点图并使用三线性插值进行体素化处理得到
+            # 
             render_voxel_pred = create_voxel_prediction(
-                render_pts3d_in_velo, render_has_semantic, render_semantic_2ds_th, render_conf_th,
+                render_pts3d_in_velo, render_has_semantic, render_semantic_2ds_th, render_conf_th,  # (296542 3) True (296542) (296542)
                 grid_size, voxel_origin, voxel_size,
                 n_classes, other_class, empty_class
-            )
+            )   # (200 200 24)
             render_voxel_pred_np = render_voxel_pred.cpu().numpy().astype(np.uint8)
             voxel_predictions_dict[f"render_th{recon_conf_thres}"] = render_voxel_pred_np
-            
+            # ================================================#
+            # 新视角渲染 -> 体素化过程，用于补全
             # If render_gen exists, also create and save combined output
             if 'render_gen' in outputs:
                 gen_output = outputs['render_gen']
@@ -620,7 +645,7 @@ if __name__ == '__main__':
                 
                 voxel_pred = gen_voxel_pred.clone()
                 non_empty_mask = render_voxel_pred != empty_class
-                voxel_pred[non_empty_mask] = render_voxel_pred[non_empty_mask]
+                voxel_pred[non_empty_mask] = render_voxel_pred[non_empty_mask] # 以新视角生成的voxel作为基础，使用真实重建视角voxel覆盖对应位置，得到融合后的occupancy
 
                 voxel_pred_np = voxel_pred.cpu().numpy().astype(np.uint8)
                 voxel_pred_np = maybe_apply_pooling(voxel_pred_np)
