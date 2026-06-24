@@ -662,15 +662,15 @@ def infer_semantic_from_boxes_and_sam2_feat_list(sam2_model_type,
     model_manager = ModelManager(device)
 
     # Only load video model if using SAM video mode
-    sam2_model = model_manager.get_sam2(sam2_model_type, load_video_model=use_sam_video)
+    sam2_model = model_manager.get_sam2(sam2_model_type, load_video_model=use_sam_video) # load sam2 large model
 
     
     # # Filter labels to only include those in kitti2idx
     
     # process the box prompt for SAM 2
-    boxes_np = boxes.cpu().numpy() if torch.is_tensor(boxes) else boxes
+    boxes_np = boxes.cpu().numpy() if torch.is_tensor(boxes) else boxes             # (35 4)
     boxes = boxes * torch.Tensor([W, H, W, H])
-    input_boxes = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
+    input_boxes = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy() # (35 4)
 
 
     # For reprojection, we need pixel xyxy format
@@ -681,9 +681,9 @@ def infer_semantic_from_boxes_and_sam2_feat_list(sam2_model_type,
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             # Get masks of the first frame
             sam2_model.set_image_features(
-                high_res_feats=sam2_feats_0['high_res_feats'],
-                image_embed=sam2_feats_0['image_embed'],
-                img_hws=[[H, W]]
+                high_res_feats=sam2_feats_0['high_res_feats'],  # 2:(1 32 128 128) (1 64 64 64)
+                image_embed=sam2_feats_0['image_embed'],        # (1 256 32 32)
+                img_hws=[[H, W]]                                # 160 512
             )
             masks = sam2_model.predict_masks(boxes=input_boxes) # (N, 160, 512)
             

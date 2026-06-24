@@ -203,7 +203,7 @@ if __name__ == '__main__':
     # 3D重建
     # encoder
     encoder = Dust3rEncoder() # Encoder: Dust3r 编码器
-    # decoder
+    # decoder Must3rdecoder: 增加了
     decoder = Must3rDecoder(img_size=(512, 512), 
                             enc_embed_dim=1024, 
                             embed_dim=768,                
@@ -216,7 +216,7 @@ if __name__ == '__main__':
     decoder.pointmaps_activation = ActivationType.LINEAR
 
     # ================================================#
-    # NVR
+    # NVR 
     # encoder
     raymap_encoder = RaymapEncoderDiT(
         use_time_cond=False,    
@@ -389,7 +389,7 @@ if __name__ == '__main__':
                 for batch_i in range(B):
                     # 取SAM feature
                     sam2_feats = {
-                        "image_embed": sam_feats_img_and_raymap[0][batch_i],    # (35 256 32 32)
+                        "image_embed": sam_feats_img_and_raymap[0][batch_i],    # (35 256 32 32) 低分辨率特征图
                         "high_res_feats": [
                             sam_feats_img_and_raymap[2][batch_i],               # (35 32 128 128)
                             sam_feats_img_and_raymap[1][batch_i],               # (35 64 64 64)
@@ -421,39 +421,41 @@ if __name__ == '__main__':
                         # 获取对应的新视角
                         corresponding_gen_view_ids = [
                             view_idx + n_recon_views
-                            for view_idx in recon_2_gen_mapping[recon_view_i]
+                            for view_idx in recon_2_gen_mapping[recon_view_i]   # recon_2_gen_mapping: {0: [0, 1, 10, 11, 20, 21], 1: [2, 3, 12, 13, 22, 23], 2: [4, 5, 14, 15, 24, 25], 3: [6, 7, 16, 17, 26, 27], 4: [8, 9, 18, 19, 28, 29]}
                         ]
                         for gen_view_i in range(
                             0,
                             max(1, len(corresponding_gen_view_ids)),
-                            args.batch_gen_view, # 2
+                            args.batch_gen_view,                            # 2
                         ):
                             recon_and_gen_ids = [recon_view_i] + corresponding_gen_view_ids[
                                 gen_view_i:gen_view_i + args.batch_gen_view 
                             ]   # 每次处理三个视角的sam语义图
 
                             sam2_feat_list = [] # 准备sam2输入feature
-                            for view_id in recon_and_gen_ids:
+                            for view_id in recon_and_gen_ids: # 收集 重建帧 + 新视角渲染帧 预测的sam2-like特征
                                 sam2_feat_list.append(
                                     {
                                         "high_res_feats": [
-                                            sam2_feats['high_res_feats'][0][view_id:view_id + 1],
-                                            sam2_feats['high_res_feats'][1][view_id:view_id + 1],
+                                            sam2_feats['high_res_feats'][0][view_id:view_id + 1],       # (1 32 128 128)
+                                            sam2_feats['high_res_feats'][1][view_id:view_id + 1],       # (1 64 64 64)
                                         ],
-                                        "image_embed": sam2_feats['image_embed'][view_id:view_id + 1],
+                                        "image_embed": sam2_feats['image_embed'][view_id:view_id + 1],  # (1 256 32 32)
                                     }
                                 )
-                            # bbox使用原始视角的bbox
+                            # =========================================================#
+                            # 利用预训练的SAM2提示词解码器 使用GroundingDino预测框作为提示，对OccAny预测得到的SAM2-like特征进行解码，从而得到第一帧的稠密语义mask
+                            # 并利用SAM2的视频跟踪能力，将语义mask传播至整个场景
                             sem2d = infer_semantic_from_boxes_and_sam2_feat_list(
-                                sam2_model_type,
-                                H,
-                                W,
-                                label_ids,      # (35)
-                                ignore_ids,
-                                boxes_np,       # (35 4) 提示框来自于原始视角，新视角的精确位置依赖于SAM2 feature propagation 论文3.3 利用sam2的视频跟踪能力，将语义mask传播至整个场景
-                                conf_np,        
-                                other_class=other_class,
-                                empty_class=empty_class,
+                                sam2_model_type,    # 'SAM2-large'
+                                H,                  # 160 
+                                W,                  # 512
+                                label_ids,          # (35)
+                                ignore_ids,         # 0 17 255
+                                boxes_np,           # (35 4) 从首帧预测的目标框
+                                conf_np,            # (35)     
+                                other_class=other_class,    # 0
+                                empty_class=empty_class,    # 17
                                 use_sam_video=True,
                                 sam2_feats_list=sam2_feat_list,
                                 poses=None,
@@ -462,10 +464,10 @@ if __name__ == '__main__':
                                 device=args.device,
                                 box_conf_thres=args.box_conf_thres,
                                 merge_masks=args.merge_masks,
-                            )   # (3 160 512) 每次处理3个视角
+                            )   # (3 160 512) 每次处理3个视角的sam2like特征
 
                             for local_idx, view_i in enumerate(recon_and_gen_ids):
-                                semantic_2ds[batch_i, view_i] = torch.from_numpy(sem2d[local_idx])
+                                semantic_2ds[batch_i, view_i] = torch.from_numpy(sem2d[local_idx])  # (160 512)
 
                             del sam2_feat_list, sem2d
                             torch.cuda.empty_cache()

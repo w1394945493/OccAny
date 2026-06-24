@@ -334,16 +334,16 @@ class SAM2ImagePredictor:
 
         mask_input, unnorm_coords, labels, unnorm_box = self._prep_prompts(
             point_coords, point_labels, box, mask_input, normalize_coords
-        )
+        )                                                                       # unnorm_box:(35 2 2)
 
         masks, iou_predictions, low_res_masks = self._predict(
             unnorm_coords,
             labels,
-            unnorm_box,
+            unnorm_box,                     # (35 2 2)
             mask_input,
             multimask_output,
             return_logits=return_logits,
-        )
+        )   # (35 1 160 512) (35 1) (35 1 128 128)
 
         masks_np = masks.squeeze(0).float().detach().cpu().numpy()
         iou_predictions_np = iou_predictions.squeeze(0).float().detach().cpu().numpy()
@@ -369,10 +369,10 @@ class SAM2ImagePredictor:
             if len(unnorm_coords.shape) == 2:
                 unnorm_coords, labels = unnorm_coords[None, ...], labels[None, ...]
         if box is not None:
-            box = torch.as_tensor(box, dtype=torch.float, device=self.device)
+            box = torch.as_tensor(box, dtype=torch.float, device=self.device)   # (35 4)
             unnorm_box = self._transforms.transform_boxes(
                 box, normalize=normalize_coords, orig_hw=self._orig_hw[img_idx]
-            )  # Bx2x2
+            )  # Bx2x2                                                          # (35 2 2)
         if mask_logits is not None:
             mask_input = torch.as_tensor(
                 mask_logits, dtype=torch.float, device=self.device
@@ -449,13 +449,13 @@ class SAM2ImagePredictor:
                 concat_labels = torch.cat([box_labels, concat_points[1]], dim=1)
                 concat_points = (concat_coords, concat_labels)
             else:
-                concat_points = (box_coords, box_labels)
+                concat_points = (box_coords, box_labels)    # (35 2 2) (35 2)
 
         sparse_embeddings, dense_embeddings = self.model.sam_prompt_encoder(
             points=concat_points,
             boxes=None,
             masks=mask_input,
-        )
+        )   # (35 3 256) (35 256 32 32)
 
         # Predict masks
         batched_mode = (

@@ -145,8 +145,8 @@ class SAM2(nn.Module):
         self.image_predictor._is_image_set = True
         self.image_predictor._is_batch = True
         self.image_predictor._features = {
-            "high_res_feats": high_res_feats,
-            "image_embed": image_embed
+            "high_res_feats": high_res_feats,   # (1 32 128 128) (1 64 64 64)
+            "image_embed": image_embed          # (1 256 32 32)
         }
 
     def predict_masks(self, point_coords=None, point_labels=None, boxes=None):
@@ -154,7 +154,7 @@ class SAM2(nn.Module):
         masks, scores, logits = self.image_predictor.predict(
                             point_coords=point_coords,
                             point_labels=point_labels,
-                            box=boxes,
+                            box=boxes,                  # (35 4)
                             multimask_output=False,
                         )
         # convert the shape to (n, H, W)
